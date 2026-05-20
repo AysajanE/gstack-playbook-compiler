@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "gstack_plan_ir_v1",
+  "title": "gstack_plan_ir_v1",
+  "description": "Deterministic intermediate representation extracted from gstack artifacts. Inputs to row_author.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "compiled_at",
+    "source_artifacts",
+    "product_goal",
+    "non_goals",
+    "constraints",
+    "recommended_approach",
+    "implementation_tasks",
+    "candidate_repo_paths",
+    "verification_hints",
+    "manual_gate_hints",
+    "external_dependency_hints",
+    "risk_hints"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "gstack_plan_ir_v1"
+    },
+    "compiled_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source_artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["kind", "path", "sha256", "byte_size"],
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": ["office_hours", "autoplan", "approved_brief", "repo_profile", "constraints"]
+          },
+          "path": { "type": "string" },
+          "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "byte_size": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    "product_goal": { "type": "string" },
+    "non_goals": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "constraints": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "recommended_approach": { "type": "string" },
+    "implementation_tasks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["task", "phase"],
+        "additionalProperties": false,
+        "properties": {
+          "task": { "type": "string" },
+          "phase": { "type": "string" },
+          "files": { "type": "array", "items": { "type": "string" } },
+          "verify": { "type": "array", "items": { "type": "string" } },
+          "notes": { "type": "string" }
+        }
+      }
+    },
+    "candidate_repo_paths": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Paths mentioned in source artifacts. Never invented; only what the parser literally observed."
+    },
+    "verification_hints": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "manual_gate_hints": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "external_dependency_hints": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "risk_hints": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "stack_profile": {
+      "type": "object",
+      "description": "Detected repo stack. Optional but useful for row_author command generation.",
+      "additionalProperties": false,
+      "properties": {
+        "languages": { "type": "array", "items": { "type": "string" } },
+        "test_runners": { "type": "array", "items": { "type": "string" } },
+        "build_tools": { "type": "array", "items": { "type": "string" } },
+        "package_managers": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

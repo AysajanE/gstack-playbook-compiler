@@ -1,0 +1,15 @@
+# Code owners for the gstack playbook compiler.
+#
+# See https://docs.github.com/en/repositories/managing-your-repositories-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default owner for everything.
+*  @AysajanE
+
+# Contract-critical files. These decide what the compiler emits and whether it
+# fails closed — review every change with the same care as a release.
+/automation/gstack_to_markdown_playbook_v1/validators.py     @AysajanE
+/automation/gstack_to_markdown_playbook_v1/emit_markdown.py  @AysajanE
+/automation/gstack_to_markdown_playbook_v1/schemas/          @AysajanE
+
+# CI and security configuration.
+/.github/  @AysajanE

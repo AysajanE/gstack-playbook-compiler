@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gstack-to-markdown-playbook-v1"
+version = "0.1.0"
+description = "Compile approved gstack design artifacts into plan-orchestrator markdown_playbook_v1."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "gstack-to-markdown-playbook-v1 contributors" }]
+dependencies = ["jsonschema>=4.0"]
+keywords = ["gstack", "plan-orchestrator", "markdown-playbook-v1", "compiler", "automation"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Build Tools",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7.0"]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+gstack-to-markdown-playbook-v1 = "automation.gstack_to_markdown_playbook_v1.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["automation*"]
+namespaces = false
+
+[tool.setuptools.package-data]
+automation = [
+  "gstack_to_markdown_playbook_v1/prompts/*.md",
+  "gstack_to_markdown_playbook_v1/schemas/*.json",
+]

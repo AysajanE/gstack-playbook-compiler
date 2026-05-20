@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "compiler_validation_report_v1",
+  "title": "compiler_validation_report_v1",
+  "description": "Deterministic validation report produced by validators.py. The compiler refuses to emit a playbook when status != 'pass'.",
+  "type": "object",
+  "required": ["schema_version", "validated_at", "status", "errors", "warnings", "row_summaries"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "compiler_validation_report_v1" },
+    "validated_at": { "type": "string", "format": "date-time" },
+    "status": { "type": "string", "enum": ["pass", "fail", "repaired_pass"] },
+    "errors": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/finding" }
+    },
+    "warnings": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/finding" }
+    },
+    "row_summaries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["step_id", "phase", "issues"],
+        "additionalProperties": false,
+        "properties": {
+          "step_id": { "type": "string" },
+          "phase": { "type": "string" },
+          "issues": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    "repair_attempts": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1
+    }
+  },
+  "$defs": {
+    "finding": {
+      "type": "object",
+      "required": ["code", "severity", "message"],
+      "additionalProperties": false,
+      "properties": {
+        "code": { "type": "string" },
+        "severity": { "type": "string", "enum": ["error", "warning"] },
+        "step_id": { "type": "string" },
+        "column": { "type": "string" },
+        "message": { "type": "string" }
+      }
+    }
+  }
+}
