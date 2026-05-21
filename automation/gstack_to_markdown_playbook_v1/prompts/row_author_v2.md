@@ -79,7 +79,7 @@ Do not include any other fields.
 15. Docs-only rows should set `requires_red_green = false` and include `required_verification_artifacts`.
 16. If source artifacts mention manual approval, security review, presenter review, production change, migration, secrets, auth, deploy, or external evidence, add the appropriate `manual_gate` or `external_check`.
 17. Do not use manual gates to hide uncertainty about basic row quality.
-18. If a behavioral task lacks concrete files or test commands and no command can be inferred from the supplied context, do not fabricate. Add a compiler warning explaining the missing facts.
+18. If a source task lacks concrete files, do not fabricate paths. The compiler may emit planning-gap rows when explicitly allowed; otherwise it fails closed before model authoring.
 19. Add a `source_task: task_NNN` note to every row that implements a source task.
 
 # Path Rules

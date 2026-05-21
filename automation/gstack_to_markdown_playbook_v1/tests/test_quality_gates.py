@@ -160,6 +160,26 @@ class QualityGatesTest(unittest.TestCase):
 
         self.assertIn("AUTHOR_TOO_MANY_ROWS", {finding["code"] for finding in quality["errors"]})
 
+    def test_approved_brief_only_allowed_write_root_is_enforced(self) -> None:
+        context = _context()
+        context["global_rules"] = {
+            "max_rows": 25,
+            "constrained_allowed_write_roots": ["docs/playbooks"],
+        }
+        row = _good_row()
+        row.allowed_write_roots = ["src/api"]
+
+        quality = validate_author_quality(
+            bundle=CandidateRowsBundle(rows=[row]),
+            ir=_ir(),
+            author_context=context,
+        )
+
+        self.assertIn(
+            "AUTHOR_WRITE_ROOT_OUTSIDE_APPROVED_CONSTRAINT",
+            {finding["code"] for finding in quality["errors"]},
+        )
+
     def test_prereq_range_expands_for_forward_prerequisite_checks(self) -> None:
         row = _good_row()
         row.step_id = "04"

@@ -22,6 +22,11 @@ class PathPolicyTest(unittest.TestCase):
         self.assertTrue(is_forbidden_path(".env.local"))
         self.assertTrue(is_forbidden_path(".git/config"))
 
+    def test_mcp_json_prefix_is_forbidden(self) -> None:
+        self.assertTrue(is_forbidden_path(".mcp.json"))
+        self.assertTrue(is_forbidden_path(".mcp.json/config"))
+        self.assertTrue(is_forbidden_path("nested/.mcp.json/config"))
+
     def test_classifies_paths_and_clamps_write_roots(self) -> None:
         self.assertEqual(classify_path("src/api/mood.py"), "code")
         self.assertEqual(classify_path("tests/test_mood.py"), "test")

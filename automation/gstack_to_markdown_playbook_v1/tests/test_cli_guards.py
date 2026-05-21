@@ -5,6 +5,7 @@ import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from automation.gstack_to_markdown_playbook_v1.cli import main
 
@@ -208,6 +209,77 @@ Build a small reviewed artifact.
             self.assertEqual(rc, 2)
             self.assertFalse(out.exists())
 
+    def test_missing_design_file_returns_cli_error_not_traceback(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            out = root / "docs" / "playbooks" / "demo.playbook.md"
+
+            rc = main([
+                "compile",
+                "--repo-root", str(root),
+                "--design", str(root / "docs" / "gstack" / "missing.md"),
+                "--out", str(out),
+                "--dry-run",
+            ])
+
+            self.assertEqual(rc, 2)
+            self.assertFalse(out.exists())
+
+    def test_repo_root_must_exist(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp) / "missing-repo"
+            out = root / "docs" / "playbooks" / "demo.playbook.md"
+
+            rc = main([
+                "compile",
+                "--repo-root", str(root),
+                "--design", str(root / "docs" / "gstack" / "design.md"),
+                "--out", str(out),
+                "--dry-run",
+            ])
+
+            self.assertEqual(rc, 2)
+            self.assertFalse(out.exists())
+
+    def test_design_inputs_must_use_canonical_location_by_default(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            design = root / "notes" / "design.md"
+            design.parent.mkdir(parents=True)
+            design.write_text("# Design\n\n## Goal\n\nBuild the playbook.\n", encoding="utf-8")
+            out = root / "docs" / "playbooks" / "demo.playbook.md"
+
+            rc = main([
+                "compile",
+                "--repo-root", str(root),
+                "--design", str(design),
+                "--out", str(out),
+                "--dry-run",
+            ])
+
+            self.assertEqual(rc, 2)
+            self.assertFalse(out.exists())
+
+    def test_allow_noncanonical_inputs_is_explicit_escape_hatch(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            design = root / "notes" / "design.md"
+            design.parent.mkdir(parents=True)
+            design.write_text("# Design\n\n## Goal\n\nBuild the playbook.\n", encoding="utf-8")
+            out = root / "docs" / "playbooks" / "demo.playbook.md"
+
+            rc = main([
+                "compile",
+                "--repo-root", str(root),
+                "--design", str(design),
+                "--out", str(out),
+                "--dry-run",
+                "--allow-noncanonical-inputs",
+            ])
+
+            self.assertEqual(rc, 0)
+            self.assertTrue(out.exists())
+
     def test_verify_with_po_requires_plan_orchestrator_root_before_emit(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -291,9 +363,13 @@ Build a small reviewed artifact.
 
             self.assertEqual(rc, 3)
             self.assertFalse(out.exists())
-            validation = json.loads(out.with_name("demo.validation.json").read_text(encoding="utf-8"))
+            validation = json.loads(
+                out.with_name("demo.compile-failed.validation.json").read_text(encoding="utf-8")
+            )
             self.assertEqual(validation["errors"][0]["code"], "AUTHOR_NO_IMPLEMENTATION_TASKS")
-            author_input = json.loads(out.with_name("demo.author_input.json").read_text(encoding="utf-8"))
+            author_input = json.loads(
+                out.with_name("demo.compile-failed.author_input.json").read_text(encoding="utf-8")
+            )
             self.assertEqual(author_input["schema_version"], "row_author_context_v1")
 
     def test_external_json_author_uses_one_bounded_repair_attempt(self) -> None:
@@ -360,10 +436,12 @@ Build a small reviewed artifact.
 
             self.assertEqual(rc, 3)
             self.assertFalse(out.exists())
-            validation = json.loads(out.with_name("demo.validation.json").read_text(encoding="utf-8"))
+            validation = json.loads(
+                out.with_name("demo.compile-failed.validation.json").read_text(encoding="utf-8")
+            )
             self.assertIn("AUTHOR_TOO_MANY_ROWS", {err["code"] for err in validation["errors"]})
-            self.assertTrue(out.with_name("demo.rows.json").exists())
-            self.assertTrue(out.with_name("demo.author_input.json").exists())
+            self.assertTrue(out.with_name("demo.compile-failed.rows.json").exists())
+            self.assertTrue(out.with_name("demo.compile-failed.author_input.json").exists())
 
     def test_validation_warnings_require_allow_warnings_in_non_dry_run(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -390,12 +468,93 @@ Build a small reviewed artifact.
             ])
 
             self.assertEqual(rc, 3)
-            validation = json.loads(out.with_name("demo.validation.json").read_text(encoding="utf-8"))
+            validation = json.loads(
+                out.with_name("demo.compile-failed.validation.json").read_text(encoding="utf-8")
+            )
             self.assertIn("UNKNOWN_VERIFICATION_COMMAND", {w["code"] for w in validation["warnings"]})
-            rows = json.loads(out.with_name("demo.rows.json").read_text(encoding="utf-8"))
+            rows = json.loads(
+                out.with_name("demo.compile-failed.rows.json").read_text(encoding="utf-8")
+            )
             self.assertTrue(
                 any("UNKNOWN_VERIFICATION_COMMAND" in warning for warning in rows["compiler_warnings"])
             )
+
+    def test_failed_compile_does_not_overwrite_sidecars_for_existing_playbook(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for rel in ["src/api/mood.py", "tests/test_mood_api.py"]:
+                path = root / rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("# file\n", encoding="utf-8")
+            out = root / "docs" / "playbooks" / "demo.playbook.md"
+            out.parent.mkdir(parents=True)
+            out.write_text("old playbook\n", encoding="utf-8")
+            out.with_name("demo.validation.json").write_text('{"old": true}\n', encoding="utf-8")
+            payload = self._valid_model_payload()
+            payload["rows"][0]["allowed_write_roots"] = ["src"]
+            script = self._fake_author_script(root, payload)
+
+            rc = main([
+                "compile",
+                "--repo-root", str(root),
+                "--design", str(self._design(root)),
+                "--autoplan", str(self._autoplan(root)),
+                "--out", str(out),
+                "--row-author", "external-json",
+                "--row-author-command", f"{sys.executable} {script}",
+                "--no-row-repair",
+                "--skip-po-verify", "unit test",
+            ])
+
+            self.assertEqual(rc, 3)
+            self.assertEqual(out.read_text(encoding="utf-8"), "old playbook\n")
+            self.assertEqual(
+                json.loads(out.with_name("demo.validation.json").read_text(encoding="utf-8")),
+                {"old": True},
+            )
+            self.assertTrue(out.with_name("demo.compile-failed.validation.json").exists())
+
+    def test_author_sidecar_schema_failure_fails_closed(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for rel in ["src/api/mood.py", "tests/test_mood_api.py"]:
+                path = root / rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("# file\n", encoding="utf-8")
+            out = root / "docs" / "playbooks" / "demo.playbook.md"
+            script = self._fake_author_script(root, self._valid_model_payload())
+
+            with patch(
+                "automation.gstack_to_markdown_playbook_v1.cli.validate_author_trace_payload",
+                return_value=[
+                    {
+                        "code": "JSON_SCHEMA_VALIDATION",
+                        "severity": "error",
+                        "message": "bad trace",
+                    }
+                ],
+            ):
+                rc = main([
+                    "compile",
+                    "--repo-root", str(root),
+                    "--design", str(self._design(root)),
+                    "--autoplan", str(self._autoplan(root)),
+                    "--out", str(out),
+                    "--row-author", "external-json",
+                    "--row-author-command", f"{sys.executable} {script}",
+                    "--skip-po-verify", "unit test",
+                ])
+
+            self.assertEqual(rc, 3)
+            self.assertFalse(out.exists())
+            validation = json.loads(
+                out.with_name("demo.compile-failed.validation.json").read_text(encoding="utf-8")
+            )
+            self.assertIn(
+                "AUTHOR_SIDECAR_SCHEMA_INVALID",
+                {err["code"] for err in validation["errors"]},
+            )
+            self.assertIn("JSON_SCHEMA_VALIDATION", {err["code"] for err in validation["errors"]})
 
     def test_po_verification_failure_does_not_leave_official_playbook(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -417,6 +576,9 @@ Build a small reviewed artifact.
             self.assertEqual(rc, 4)
             self.assertFalse(out.exists())
             self.assertFalse(out.with_name(out.name + ".tmp").exists())
+            self.assertFalse(out.with_name("demo.validation.json").exists())
+            self.assertTrue(out.with_name("demo.compile-failed.validation.json").exists())
+            self.assertTrue(out.with_name("demo.compile-failed.po_verification.json").exists())
 
 
 if __name__ == "__main__":

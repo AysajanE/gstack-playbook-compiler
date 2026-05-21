@@ -38,7 +38,7 @@ _FIELD_LINE = re.compile(
     re.IGNORECASE,
 )
 _MANUAL_GATE_WORDS = (
-    "approval", "approved", "signoff", "sign-off", "human gate", "manual gate",
+    "approval", "signoff", "sign-off", "human gate", "manual gate",
     "human review", "reviewer", "presenter review", "security review", "operator confirmation",
 )
 _EXTERNAL_DEP_WORDS = (
@@ -92,6 +92,34 @@ def _find_section(sections: dict[str, str], *needles: str) -> str:
         for needle in needles:
             if needle in title:
                 return body
+    return ""
+
+
+def _normalize_heading(title: str) -> str:
+    return re.sub(r"\s+", " ", title.strip().lower())
+
+
+def _find_section_exact_first(
+    sections: dict[str, str],
+    *,
+    exact: tuple[str, ...] = (),
+    contains: tuple[str, ...] = (),
+    exclude_contains: tuple[str, ...] = (),
+) -> str:
+    normalized = {_normalize_heading(title): body for title, body in sections.items()}
+
+    for wanted in exact:
+        body = normalized.get(_normalize_heading(wanted))
+        if body:
+            return body
+
+    for title, body in sections.items():
+        norm = _normalize_heading(title)
+        if any(excluded in norm for excluded in exclude_contains):
+            continue
+        if any(needle in norm for needle in contains):
+            return body
+
     return ""
 
 
@@ -415,12 +443,11 @@ def parse(
     combined = "\n\n".join(bodies)
     sections = _split_h2(combined)
 
-    problem = _find_section(
+    problem = _find_section_exact_first(
         sections,
-        "problem statement",
-        "goal",
-        "objective",
-        "what makes this cool",
+        exact=("problem statement", "goal", "objective"),
+        contains=("what makes this cool",),
+        exclude_contains=("non-goal", "non goals", "out of scope"),
     )
     constraints_body = _find_section(sections, "constraints")
     premises_body = _find_section(sections, "premises")

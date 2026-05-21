@@ -10,6 +10,7 @@ Rules enforced:
 - Narrow-roots: allowed_write_roots must not be empty; not "."; not bare top-level "src".
 - Reserved columns rejected via schema (po_candidate_rows_v1 forbids additionalProperties).
 - Prereq integrity: prereq tokens must reference defined step_ids OR be "none" OR a range "NN-NN".
+- verification commands are validated for every row.
 - requires_red_green=true → at least one required_verification_commands entry.
 - requires_red_green=false on docs-only items → at least required_verification_artifacts or
   deliverable artifact existence.
@@ -295,6 +296,17 @@ def _validate_row(row: CandidateRow, defined_ids: set[str], *, repo_root: Path |
             step_id=step_id, column="deliverable",
         ))
 
+    # Verification command safety applies to every row, including docs-only rows.
+    for command in row.required_verification_commands:
+        for finding in validate_verification_command(command):
+            findings.append(_finding(
+                finding.code,
+                "error" if finding.code != "UNKNOWN_VERIFICATION_COMMAND" else "warning",
+                finding.message,
+                step_id=step_id,
+                column="required_verification_commands",
+            ))
+
     # requires_red_green discipline
     if row.requires_red_green:
         if not row.required_verification_commands:
@@ -303,15 +315,6 @@ def _validate_row(row: CandidateRow, defined_ids: set[str], *, repo_root: Path |
                 "requires_red_green=true requires at least one required_verification_commands entry.",
                 step_id=step_id, column="required_verification_commands",
             ))
-        for command in row.required_verification_commands:
-            for finding in validate_verification_command(command):
-                findings.append(_finding(
-                    finding.code,
-                    "error" if finding.code != "UNKNOWN_VERIFICATION_COMMAND" else "warning",
-                    finding.message,
-                    step_id=step_id,
-                    column="required_verification_commands",
-                ))
     else:
         if any(_looks_behavioral_path(path) for path in row.deliverable):
             findings.append(_finding(

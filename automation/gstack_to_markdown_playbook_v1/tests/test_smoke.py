@@ -39,7 +39,8 @@ class CompilerSmokeTest(unittest.TestCase):
     def test_dry_run_end_to_end(self):
         with TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            design = tmp_path / "design.md"
+            design = tmp_path / "docs" / "gstack" / "design.md"
+            design.parent.mkdir(parents=True)
             design.write_text(_TINY_DESIGN, encoding="utf-8")
             out = tmp_path / "docs" / "playbooks" / "demo.playbook.md"
             rc = main([

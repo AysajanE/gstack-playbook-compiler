@@ -25,13 +25,14 @@ FORBIDDEN_COMMAND_PREFIXES = (
 )
 
 FORBIDDEN_SHELL_TOKENS = (
-    ";",
     "&&",
     "||",
     "|",
-    ">",
     ">>",
+    ";",
     "<",
+    ">",
+    "&",
     "`",
     "$(",
     "\n",
@@ -74,6 +75,10 @@ class CommandFinding:
     message: str
 
 
+def _starts_with_command(normalized: str, prefix: str) -> bool:
+    return normalized == prefix or normalized.startswith(prefix + " ")
+
+
 def validate_verification_command(command: str) -> list[CommandFinding]:
     cmd = command.strip()
     if not cmd:
@@ -85,14 +90,16 @@ def validate_verification_command(command: str) -> list[CommandFinding]:
         ]
 
     findings: list[CommandFinding] = []
+    masked_cmd = cmd
     for token in FORBIDDEN_SHELL_TOKENS:
-        if token in cmd:
+        if token in masked_cmd:
             findings.append(
                 CommandFinding(
                     "UNSAFE_VERIFICATION_COMMAND",
                     f"verification command contains forbidden shell token {token!r}",
                 )
             )
+            masked_cmd = masked_cmd.replace(token, " " * len(token))
 
     try:
         normalized = " ".join(shlex.split(cmd))
@@ -107,7 +114,7 @@ def validate_verification_command(command: str) -> list[CommandFinding]:
 
     lower_normalized = normalized.lower()
     for prefix in FORBIDDEN_COMMAND_PREFIXES:
-        if lower_normalized.startswith(prefix):
+        if _starts_with_command(lower_normalized, prefix):
             findings.append(
                 CommandFinding(
                     "UNSAFE_VERIFICATION_COMMAND",
@@ -115,7 +122,7 @@ def validate_verification_command(command: str) -> list[CommandFinding]:
                 )
             )
 
-    if not any(lower_normalized.startswith(prefix) for prefix in ALLOWED_PREFIXES):
+    if not any(_starts_with_command(lower_normalized, prefix) for prefix in ALLOWED_PREFIXES):
         findings.append(
             CommandFinding(
                 "UNKNOWN_VERIFICATION_COMMAND",

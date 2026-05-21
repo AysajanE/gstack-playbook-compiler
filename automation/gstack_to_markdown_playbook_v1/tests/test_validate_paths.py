@@ -98,6 +98,13 @@ class ValidatePathsTest(unittest.TestCase):
         ))
         self.assertIn("UNSAFE_VERIFICATION_COMMAND", codes)
 
+    def test_docs_only_destructive_verification_command_is_error(self) -> None:
+        codes = self._codes(_row(
+            requires_red_green=False,
+            required_verification_commands=["rm -rf ."],
+        ))
+        self.assertIn("UNSAFE_VERIFICATION_COMMAND", codes)
+
     def test_shell_chaining_in_verification_commands_is_error(self) -> None:
         codes = self._codes(_row(
             phase="backend",

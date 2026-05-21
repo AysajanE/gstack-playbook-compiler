@@ -33,6 +33,7 @@ FORBIDDEN_PREFIXES = {
     ".git",
     ".codex",
     ".claude",
+    ".mcp.json",
     "ops/config",
     "secrets",
 }

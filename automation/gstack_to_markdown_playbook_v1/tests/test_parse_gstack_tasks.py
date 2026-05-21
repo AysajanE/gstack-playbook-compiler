@@ -89,6 +89,44 @@ Build a small mood API.
         self.assertEqual(ir.product_goal, "Create a minimal repository health note.")
         self.assertIn("The only allowed write root is `docs/playbooks/`.", ir.constraints)
 
+    def test_non_goals_heading_does_not_win_goal_extraction(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            design = root / "docs" / "gstack" / "design.md"
+            design.parent.mkdir(parents=True)
+            design.write_text(
+                """
+# Design
+
+## Non-Goals
+
+Do not modify application code.
+
+## Goal
+
+Build the docs playbook.
+""",
+                encoding="utf-8",
+            )
+
+            ir = parse(design_path=design, repo_root=root)
+
+        self.assertEqual(ir.product_goal, "Build the docs playbook.")
+
+    def test_approved_brief_status_does_not_create_manual_gate_hint(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            design = root / "docs" / "gstack" / "design.md"
+            brief = root / "docs" / "briefs" / "demo.approved-brief.md"
+            design.parent.mkdir(parents=True)
+            brief.parent.mkdir(parents=True)
+            design.write_text("# Design\n\n## Goal\n\nBuild docs.\n", encoding="utf-8")
+            brief.write_text("Status: approved for local dry-run testing.\n", encoding="utf-8")
+
+            ir = parse(design_path=design, approved_brief_path=brief, repo_root=root)
+
+        self.assertNotIn("approved", [hint.lower() for hint in ir.manual_gate_hints])
+
     def test_extracts_implementation_tasks_from_markdown_table(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)

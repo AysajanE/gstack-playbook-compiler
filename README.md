@@ -106,7 +106,7 @@ python automation/gstack_to_markdown_playbook_v1/cli.py compile \
   --plan-orchestrator-root $KEEL_ROOT/tools/plan-orchestrator
 ```
 
-The model-backed row author must return raw `po_candidate_rows_v1` JSON on stdout. The compiler sends the prompt on stdin, validates the JSON, optionally performs one repair attempt, emits Markdown itself, and runs PO contract verification when configured.
+The model-backed row author must return raw `po_candidate_rows_v1` JSON on stdout. The compiler sends the prompt on stdin from an isolated cwd with obvious repo/path/secret environment variables removed, validates the JSON, optionally performs one repair attempt, emits Markdown itself, and runs PO contract verification when configured.
 
 Dry run (uses deterministic stub row author; no LLM needed):
 
@@ -147,6 +147,11 @@ docs/playbooks/<slug>.author_input.json
 docs/playbooks/<slug>.author_trace.json
 ```
 
+Failed compiles never overwrite those official sidecars. Candidate diagnostics
+are written under `.compile-failed.*` names, for example
+`docs/playbooks/<slug>.compile-failed.validation.json`, so an older successful
+playbook cannot be paired with a failed candidate's rows or trace.
+
 The meta sidecar records compiler version, source hashes, emitted playbook hash, warnings, and PO verification status. The compiler never executes PO runs or manual gates.
 
 ```text
@@ -170,6 +175,10 @@ The compiler must not:
 - write outside `docs/playbooks/` unless `--allow-outside-playbooks` is explicit
 - fabricate repo paths the parser did not extract from authored gstack inputs
 - emit cells containing `|`; PO's parser does not support escaped pipes
+
+The public PO contract accepts some broad roots for hand-authored playbooks.
+The compiler is stricter: model-authored rows must use narrow roots and may not
+emit `src`, `tests`, or `test`.
 
 ## Repository layout
 

@@ -16,11 +16,18 @@ and this project aims to follow [Semantic Versioning](https://semver.org/).
 - Shared path policy, safe-deliverable quality gates, verification-command
   safety validation, and parser support for table-formatted implementation
   tasks.
+- Compile-failure diagnostics under `.compile-failed.*`, including PO contract
+  verification payloads.
 
 ### Changed
 
 - Source artifact paths are recorded repo-relative when `--repo-root` is known.
-- External row-author commands run from an isolated temporary cwd by default.
+- Source inputs must be promoted under `docs/gstack/` or `docs/briefs/` by
+  default, with an explicit noncanonical-input escape hatch for tests.
+- External row-author commands run from an isolated temporary cwd with a
+  sanitized environment by default.
+- Verification commands are safety-checked for every row, including docs-only
+  rows.
 - The emitter always writes all six `markdown_playbook_v1` sections and refuses
   raw pipe characters instead of mutating them.
 

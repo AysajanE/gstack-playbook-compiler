@@ -297,6 +297,11 @@ class StubRowAuthor:
         options: RowAuthorOptions,
     ) -> RowAuthorResult:
         bundle = stub_author(ir)
+        author_context = build_author_context(
+            ir=ir,
+            repo_root=repo_root,
+            max_rows=options.max_rows,
+        )
         return RowAuthorResult(
             bundle=bundle,
             trace={
@@ -308,7 +313,7 @@ class StubRowAuthor:
                 "invented_paths": [],
                 "warnings": list(bundle.compiler_warnings),
             },
-            author_input={},
+            author_input=author_context,
         )
 
     def __call__(self, ir: GstackPlanIR) -> CandidateRowsBundle:
@@ -550,7 +555,13 @@ class LLMJsonRowAuthor:
         )
 
 
-def get_author(name: str, *, command: str = "", cwd: Path | None = None) -> RowAuthor:
+def get_author(
+    name: str,
+    *,
+    command: str = "",
+    cwd: Path | None = None,
+    inherit_env: bool = False,
+) -> RowAuthor:
     if name == "stub":
         return StubRowAuthor()
     if name == "external-json":
@@ -558,13 +569,13 @@ def get_author(name: str, *, command: str = "", cwd: Path | None = None) -> RowA
             raise NotImplementedError("--row-author external-json requires --row-author-command")
         return LLMJsonRowAuthor(
             name=name,
-            model_client=ExternalCommandJsonClient(command, cwd=cwd),
+            model_client=ExternalCommandJsonClient(command, cwd=cwd, inherit_env=inherit_env),
         )
     if name in {"claude", "codex"}:
         resolved = command or DEFAULT_AUTHOR_COMMANDS[name]
         return LLMJsonRowAuthor(
             name=name,
-            model_client=ExternalCommandJsonClient(resolved, cwd=cwd),
+            model_client=ExternalCommandJsonClient(resolved, cwd=cwd, inherit_env=inherit_env),
         )
     raise ValueError("unknown row_author {!r}; available: {}".format(
         name,

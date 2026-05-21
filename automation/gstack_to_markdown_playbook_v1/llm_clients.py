@@ -26,10 +26,42 @@ class ModelClientError(RuntimeError):
     pass
 
 
+REDACT_ENV_PREFIXES = (
+    "PRODUCT_REPO",
+    "DATABASE_URL",
+    "SUPABASE",
+    "STRIPE",
+    "VERCEL",
+    "AWS_SECRET",
+    "AWS_ACCESS",
+    "GITHUB_TOKEN",
+)
+
+
+def _sanitized_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env.pop("PWD", None)
+    env.pop("OLDPWD", None)
+    env.pop("PRODUCT_REPO", None)
+
+    for key in list(env):
+        upper = key.upper()
+        if any(upper == prefix or upper.startswith(prefix + "_") for prefix in REDACT_ENV_PREFIXES):
+            env.pop(key, None)
+
+    return env
+
+
 class ExternalCommandJsonClient:
     """Run a configured command, prompt on stdin, JSON text on stdout."""
 
-    def __init__(self, command: str, *, cwd: Path | None = None) -> None:
+    def __init__(
+        self,
+        command: str,
+        *,
+        cwd: Path | None = None,
+        inherit_env: bool = False,
+    ) -> None:
         self.command = command.strip()
         if not self.command:
             raise ModelClientError("row author command is empty")
@@ -40,6 +72,7 @@ class ExternalCommandJsonClient:
             raise ModelClientError(f"row author executable not found on PATH: {parts[0]}")
         self._parts = parts
         self.cwd = cwd
+        self.inherit_env = inherit_env
         self.last_stderr = ""
 
     def complete_json(
@@ -48,7 +81,7 @@ class ExternalCommandJsonClient:
         prompt: str,
         timeout_sec: int,
     ) -> str:
-        env = os.environ.copy()
+        env = os.environ.copy() if self.inherit_env else _sanitized_env()
 
         def _run(proc_cwd: Path) -> subprocess.CompletedProcess[str]:
             return subprocess.run(

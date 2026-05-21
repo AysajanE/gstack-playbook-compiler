@@ -213,6 +213,13 @@ def validate_author_quality(
     known_write_roots = {
         normalize_repo_path(root) for root in author_context.get("known_write_roots", [])
     }
+    constrained_roots = {
+        normalize_repo_path(root)
+        for root in author_context.get("global_rules", {}).get(
+            "constrained_allowed_write_roots", []
+        )
+        if normalize_repo_path(root)
+    }
     path_ledger = {
         normalize_repo_path(entry.get("path", "")): entry
         for entry in author_context.get("path_ledger", [])
@@ -303,6 +310,22 @@ def validate_author_quality(
 
         for root in row.allowed_write_roots:
             normalized = normalize_repo_path(root)
+            if constrained_roots and not (
+                normalized in constrained_roots
+                or path_inside_any_root(normalized, sorted(constrained_roots))
+            ):
+                errors.append(
+                    _finding(
+                        "AUTHOR_WRITE_ROOT_OUTSIDE_APPROVED_CONSTRAINT",
+                        "error",
+                        (
+                            f"allowed_write_roots entry {normalized!r} is outside "
+                            f"approved write roots {sorted(constrained_roots)}"
+                        ),
+                        step_id=row.step_id,
+                        column="allowed_write_roots",
+                    )
+                )
             if normalized not in known_write_roots and not root_derived_from_known_path(
                 normalized, safe_deliverable_paths
             ):

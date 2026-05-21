@@ -122,6 +122,28 @@ class AuthorContextTest(unittest.TestCase):
 
         self.assertTrue(context["task_cards"][0]["missing_declared_files"])
 
+    def test_extracts_constrained_allowed_write_roots_from_constraints(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ir = GstackPlanIR(
+                compiled_at="2026-05-21T00:00:00+00:00",
+                constraints=["The only allowed write root is `docs/playbooks/`."],
+                implementation_tasks=[
+                    ImplementationTask(
+                        task="Write the playbook note",
+                        phase="Docs",
+                        files=["docs/playbooks/demo.md"],
+                    )
+                ],
+            )
+
+            context = build_author_context(ir=ir, repo_root=root)
+
+        self.assertEqual(
+            context["global_rules"]["constrained_allowed_write_roots"],
+            ["docs/playbooks"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,12 @@ from .verification_policy import (
     infer_verification_commands,
     task_requires_red_green,
     task_text_looks_behavioral,
+)
+
+
+_ALLOWED_ROOT_RE = re.compile(
+    r"only allowed write roots?\s+(?:is|are)\s+(.+)$",
+    re.IGNORECASE,
 )
 
 
@@ -121,6 +128,21 @@ def _constraint_conflicts(ir: GstackPlanIR) -> list[dict[str, Any]]:
                 }
             )
     return findings
+
+
+def extract_constrained_write_roots(constraints: list[str]) -> list[str]:
+    roots: list[str] = []
+    for constraint in constraints:
+        match = _ALLOWED_ROOT_RE.search(constraint)
+        if not match:
+            continue
+        text = match.group(1)
+        candidates = re.findall(r"`([^`]+)`", text) or re.split(r"[,;]\s*", text)
+        for raw in candidates:
+            root = normalize_repo_path(raw.strip().rstrip("."))
+            if root and root not in roots:
+                roots.append(root)
+    return roots
 
 
 def build_author_context(
@@ -258,6 +280,7 @@ def build_author_context(
             "pipe_characters_forbidden": True,
             "markdown_is_python_emitted": True,
             "max_repo_files": max_repo_files,
+            "constrained_allowed_write_roots": extract_constrained_write_roots(ir.constraints),
         },
         "stack_profile": ir.stack_profile.__dict__ if ir.stack_profile else None,
         "path_ledger": path_ledger,

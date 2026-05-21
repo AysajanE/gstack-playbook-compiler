@@ -32,7 +32,13 @@ from .quality_gates import validate_author_quality, warnings_as_compiler_warning
 from .row_author import RowAuthorError, RowAuthorOptions, build_author_trace, get_author
 from .row_repair import repair_rows
 from .stack_detect import detect
-from .validators import validate, validate_ir_payload
+from .validators import (
+    validate,
+    validate_author_context_payload,
+    validate_author_trace_payload,
+    validate_ir_payload,
+    validate_repair_trace_payload,
+)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -118,6 +124,14 @@ def _build_parser() -> argparse.ArgumentParser:
             "instead of an isolated temporary directory."
         ),
     )
+    compile_p.add_argument(
+        "--row-author-inherit-env",
+        action="store_true",
+        help=(
+            "Debug-only escape hatch: let model-backed row-author commands inherit the full "
+            "process environment. By default obvious repo/path/secret variables are removed."
+        ),
+    )
     compile_p.add_argument("--human-approved-by", default="", help="Name written into the playbook provenance header.")
     compile_p.add_argument("--dry-run", action="store_true", help="Use the deterministic stub author regardless of --row-author.")
     compile_p.add_argument(
@@ -135,6 +149,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--allow-outside-playbooks",
         action="store_true",
         help="Allow --out outside <repo-root>/docs/playbooks for tests or scratch output.",
+    )
+    compile_p.add_argument(
+        "--allow-noncanonical-inputs",
+        action="store_true",
+        help=(
+            "Test/scratch escape hatch: allow --design/--autoplan outside docs/gstack "
+            "and --approved-brief outside docs/briefs."
+        ),
     )
     compile_p.add_argument(
         "--plan-orchestrator-root",
@@ -175,8 +197,28 @@ def _sidecar_path(out_md: Path, kind: str) -> Path:
     return out_md.with_name(base + suffix)
 
 
+def _failure_sidecar_path(out_md: Path, kind: str) -> Path:
+    base = _slug(out_md)
+    suffix = {
+        "validation": ".compile-failed.validation.json",
+        "ir": ".compile-failed.ir.json",
+        "rows": ".compile-failed.rows.json",
+        "author_input": ".compile-failed.author_input.json",
+        "author_trace": ".compile-failed.author_trace.json",
+        "po_verification": ".compile-failed.po_verification.json",
+    }[kind]
+    return out_md.with_name(base + suffix)
+
+
 def _write_sidecar(out_md: Path, kind: str, payload: dict) -> Path:
     sibling = _sidecar_path(out_md, kind)
+    sibling.parent.mkdir(parents=True, exist_ok=True)
+    sibling.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return sibling
+
+
+def _write_failure_sidecar(out_md: Path, kind: str, payload: dict) -> Path:
+    sibling = _failure_sidecar_path(out_md, kind)
     sibling.parent.mkdir(parents=True, exist_ok=True)
     sibling.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return sibling
@@ -266,16 +308,19 @@ def _write_diagnostic_sidecars(
     bundle=None,
     author_input: dict | None = None,
     author_trace: dict | None = None,
+    po_verification: dict | None = None,
 ) -> None:
     out_md.parent.mkdir(parents=True, exist_ok=True)
-    _write_sidecar(out_md, "validation", report)
-    _write_sidecar(out_md, "ir", ir_payload)
+    _write_failure_sidecar(out_md, "validation", report)
+    _write_failure_sidecar(out_md, "ir", ir_payload)
     if bundle is not None:
-        _write_sidecar(out_md, "rows", bundle.to_dict())
+        _write_failure_sidecar(out_md, "rows", bundle.to_dict())
     if author_input is not None:
-        _write_sidecar(out_md, "author_input", author_input)
+        _write_failure_sidecar(out_md, "author_input", author_input)
     if author_trace is not None:
-        _write_sidecar(out_md, "author_trace", author_trace)
+        _write_failure_sidecar(out_md, "author_trace", author_trace)
+    if po_verification is not None:
+        _write_failure_sidecar(out_md, "po_verification", po_verification)
 
 
 def _print_next_steps(out_md: Path, plan_orchestrator_root: Path | None) -> None:
@@ -306,15 +351,28 @@ def _enforce_output_path(repo_root: Path, out_md: Path, *, allow_outside: bool) 
         )
 
 
-def _repo_relative_required(path: Path, repo_root: Path, *, label: str) -> Path:
+def _repo_relative_required(
+    path: Path,
+    repo_root: Path,
+    *,
+    label: str,
+    expected_prefixes: tuple[str, ...],
+    allow_noncanonical: bool,
+) -> Path:
     resolved = path.resolve()
     try:
-        resolved.relative_to(repo_root.resolve())
+        rel = resolved.relative_to(repo_root.resolve()).as_posix()
     except ValueError as exc:
         raise ValueError(
             f"{label} must be under --repo-root. Promote gstack artifacts into docs/gstack "
             f"or docs/briefs first: {path}"
         ) from exc
+    if not resolved.is_file():
+        raise ValueError(f"{label} file does not exist: {path}")
+    if not allow_noncanonical and not any(rel.startswith(prefix) for prefix in expected_prefixes):
+        raise ValueError(
+            f"{label} must be promoted under one of {expected_prefixes}; got {rel}"
+        )
     return resolved
 
 
@@ -433,6 +491,9 @@ def cmd_compile(args: argparse.Namespace) -> int:
     out_md: Path = args.out.resolve()
     plan_orchestrator_root = args.plan_orchestrator_root.resolve() if args.plan_orchestrator_root else None
 
+    if not repo_root.is_dir():
+        print(f"error: --repo-root does not exist or is not a directory: {repo_root}", file=sys.stderr)
+        return 2
     if args.verify_with_po and args.skip_po_verify:
         print("error: --verify-with-po and --skip-po-verify are mutually exclusive.", file=sys.stderr)
         return 2
@@ -442,13 +503,31 @@ def cmd_compile(args: argparse.Namespace) -> int:
 
     try:
         _enforce_output_path(repo_root, out_md, allow_outside=args.allow_outside_playbooks)
-        design_path = _repo_relative_required(args.design, repo_root, label="--design")
+        design_path = _repo_relative_required(
+            args.design,
+            repo_root,
+            label="--design",
+            expected_prefixes=("docs/gstack/",),
+            allow_noncanonical=args.allow_noncanonical_inputs,
+        )
         autoplan_path = (
-            _repo_relative_required(args.autoplan, repo_root, label="--autoplan")
+            _repo_relative_required(
+                args.autoplan,
+                repo_root,
+                label="--autoplan",
+                expected_prefixes=("docs/gstack/",),
+                allow_noncanonical=args.allow_noncanonical_inputs,
+            )
             if args.autoplan else None
         )
         approved_brief_path = (
-            _repo_relative_required(args.approved_brief, repo_root, label="--approved-brief")
+            _repo_relative_required(
+                args.approved_brief,
+                repo_root,
+                label="--approved-brief",
+                expected_prefixes=("docs/briefs/",),
+                allow_noncanonical=args.allow_noncanonical_inputs,
+            )
             if args.approved_brief else None
         )
     except ValueError as e:
@@ -471,8 +550,16 @@ def cmd_compile(args: argparse.Namespace) -> int:
         print("error: parsed IR failed bundled JSON schema validation.", file=sys.stderr)
         for err in ir_schema_errors:
             print(f"  [{err['code']}]: {err['message']}", file=sys.stderr)
-        out_md.parent.mkdir(parents=True, exist_ok=True)
-        _write_sidecar(out_md, "ir", ir.to_dict())
+        report = _failure_report(
+            "IR_SCHEMA_INVALID",
+            "Parsed IR failed bundled JSON schema validation.",
+        )
+        report["errors"].extend(ir_schema_errors)
+        _write_diagnostic_sidecars(
+            out_md=out_md,
+            ir_payload=ir.to_dict(),
+            report=report,
+        )
         return 3
 
     # Stage 2: row author
@@ -489,6 +576,7 @@ def cmd_compile(args: argparse.Namespace) -> int:
             author_name,
             command=args.row_author_command,
             cwd=repo_root if args.row_author_allow_repo_cwd else None,
+            inherit_env=args.row_author_inherit_env,
         )
     except (ModelClientError, NotImplementedError, ValueError) as e:
         print(f"error: {e}", file=sys.stderr)
@@ -569,6 +657,12 @@ def cmd_compile(args: argparse.Namespace) -> int:
                 model_client=author.model_client,
                 timeout_sec=author_options.timeout_sec,
             )
+            repair_schema_errors = validate_repair_trace_payload(repair_result.trace)
+            if repair_schema_errors:
+                raise ValueError(
+                    "row_repair_trace_v1 schema validation failed: "
+                    f"{repair_schema_errors[0]['message']}"
+                )
             bundle = repair_result.bundle
             author_result.bundle = bundle
             author_result.repair_attempted = True
@@ -636,6 +730,29 @@ def cmd_compile(args: argparse.Namespace) -> int:
         )
         return 3
 
+    context_schema_errors = validate_author_context_payload(author_input)
+    trace_schema_errors = validate_author_trace_payload(author_trace)
+    if context_schema_errors or trace_schema_errors:
+        print(
+            "error: author context or trace failed bundled JSON schema validation.",
+            file=sys.stderr,
+        )
+        sidecar_report = _failure_report(
+            "AUTHOR_SIDECAR_SCHEMA_INVALID",
+            "Author context or trace failed bundled schema validation.",
+        )
+        sidecar_report["errors"].extend(context_schema_errors)
+        sidecar_report["errors"].extend(trace_schema_errors)
+        _write_diagnostic_sidecars(
+            out_md=out_md,
+            ir_payload=ir.to_dict(),
+            report=sidecar_report,
+            bundle=bundle,
+            author_input=author_input,
+            author_trace=author_trace,
+        )
+        return 3
+
     # Stage 4: emit
     md = emit_playbook_markdown(
         ir=ir,
@@ -660,9 +777,24 @@ def cmd_compile(args: argparse.Namespace) -> int:
             plan_orchestrator_root=plan_orchestrator_root,
         )
         if po_verification["status"] != "pass":
-            _write_sidecar(out_md, "validation", report)
+            _write_diagnostic_sidecars(
+                out_md=out_md,
+                ir_payload=ir.to_dict(),
+                report=report,
+                bundle=bundle,
+                author_input=author_input,
+                author_trace=author_trace,
+                po_verification=po_verification,
+            )
             tmp_out_md.unlink(missing_ok=True)
             print("error: PO contract verification failed.", file=sys.stderr)
+            print(
+                "  reason: "
+                f"{po_verification.get('reason', po_verification.get('error', 'unknown'))}",
+                file=sys.stderr,
+            )
+            for warning in po_verification.get("non_playbook_warnings", []):
+                print(f"  non-playbook warning: {warning}", file=sys.stderr)
             for result in po_verification.get("commands", []):
                 print(f"  command: {' '.join(result['command'])}", file=sys.stderr)
                 print(f"  returncode: {result['returncode']}", file=sys.stderr)
