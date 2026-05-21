@@ -13,7 +13,7 @@ Package and console-script name: `gstack-to-markdown-playbook-v1` (the package
 name describes the output schema, which is the stable contract; the directory
 name is just `compiler` because that's what it is).
 
-Compile approved gstack design artifacts into a `markdown_playbook_v1` scaffold for [plan-orchestrator](https://github.com/AysajanE/plan-orchestrator) to validate and execute after human review.
+Compile approved gstack design artifacts into a `markdown_playbook_v1` for [plan-orchestrator](https://github.com/AysajanE/plan-orchestrator) to validate and execute after human review. Model-backed row authors produce real execution rows; the `stub` author remains a scaffold-only path for dry runs.
 
 This is the **fast lane** of the Keel toolchain:
 
@@ -179,6 +179,30 @@ The compiler must not:
 The public PO contract accepts some broad roots for hand-authored playbooks.
 The compiler is stricter: model-authored rows must use narrow roots and may not
 emit `src`, `tests`, or `test`.
+
+## Design notes
+
+Deliberate choices, recorded so they are conscious rather than accidental:
+
+- **Verification-command severity is two-tier.** Known-dangerous commands
+  (`rm`, `sudo`, `curl`, `git push`, shell chaining, …) are hard errors. A
+  command that is merely *not in the allowlist* is a warning, not an error, so
+  the compiler does not hard-reject a project's own legitimate test command
+  (`make test`, `tox`, a repo script). The operator accepts unknown commands
+  explicitly with `--allow-warnings REASON`, which is recorded in the meta
+  sidecar. plan-orchestrator remains the execution authority for what actually
+  runs.
+- **Behavioral-path classification is deliberately broad.** It treats config
+  and data formats (`.json`, `.yaml`, `.toml`, `.ini`, `.cfg`) as behavioral,
+  so a row that produces one is pushed to declare a red→green verification
+  command. This errs toward over-verifying rather than risk shipping an
+  unverified change; the friction on pure-config rows is the accepted cost.
+- **Plan coverage is bounded by the parser.** Step 2 authors rows only over
+  paths the deterministic Stage 1 parser extracted from the gstack inputs. A
+  thin or loosely structured `/autoplan` output yields planning-gap rows or a
+  clean compile failure — never an invented plan. A rich playbook therefore
+  requires `/autoplan` output that names concrete files (and ideally
+  verification commands) per task.
 
 ## Repository layout
 

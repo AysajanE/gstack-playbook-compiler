@@ -73,6 +73,9 @@ class LlmClientsTest(unittest.TestCase):
         self.assertEqual(parse_json_object_strict(raw), {"cwd_is_repo": True})
 
     def test_external_command_sanitizes_repo_and_secret_environment_by_default(self) -> None:
+        # The environment is allowlisted: arbitrary secrets must be dropped even
+        # when their names match no known denylist pattern, and the variables a
+        # model CLI needs (PATH, HOME, provider credentials) must survive.
         with TemporaryDirectory() as tmp:
             script = Path(tmp) / "env_json.py"
             script.write_text(
@@ -80,11 +83,14 @@ class LlmClientsTest(unittest.TestCase):
                 "print(json.dumps({\n"
                 "  'PRODUCT_REPO': 'PRODUCT_REPO' in os.environ,\n"
                 "  'DATABASE_URL': 'DATABASE_URL' in os.environ,\n"
-                "  'SUPABASE_KEY': 'SUPABASE_KEY' in os.environ,\n"
-                "  'STRIPE_SECRET_KEY': 'STRIPE_SECRET_KEY' in os.environ,\n"
-                "  'VERCEL_TOKEN': 'VERCEL_TOKEN' in os.environ,\n"
                 "  'GITHUB_TOKEN': 'GITHUB_TOKEN' in os.environ,\n"
                 "  'PWD': 'PWD' in os.environ,\n"
+                "  'OURA_CLIENT_SECRET': 'OURA_CLIENT_SECRET' in os.environ,\n"
+                "  'MOOD_TOKEN': 'MOOD_TOKEN' in os.environ,\n"
+                "  'ACME_API_KEY': 'ACME_API_KEY' in os.environ,\n"
+                "  'PATH': 'PATH' in os.environ,\n"
+                "  'HOME': 'HOME' in os.environ,\n"
+                "  'ANTHROPIC_API_KEY': os.environ.get('ANTHROPIC_API_KEY'),\n"
                 "}))\n",
                 encoding="utf-8",
             )
@@ -95,11 +101,14 @@ class LlmClientsTest(unittest.TestCase):
                 {
                     "PRODUCT_REPO": "/tmp/repo",
                     "DATABASE_URL": "postgres://example",
-                    "SUPABASE_KEY": "secret",
-                    "STRIPE_SECRET_KEY": "secret",
-                    "VERCEL_TOKEN": "secret",
                     "GITHUB_TOKEN": "secret",
                     "PWD": "/tmp/repo",
+                    # Secrets a name-pattern denylist would miss entirely:
+                    "OURA_CLIENT_SECRET": "secret",
+                    "MOOD_TOKEN": "secret",
+                    "ACME_API_KEY": "secret",
+                    # A provider credential the row-author CLI legitimately needs:
+                    "ANTHROPIC_API_KEY": "provider-key",
                 },
                 clear=False,
             ):
@@ -108,13 +117,18 @@ class LlmClientsTest(unittest.TestCase):
         self.assertEqual(
             parse_json_object_strict(raw),
             {
+                # Repo/ambient secrets are dropped, including the generic ones.
                 "PRODUCT_REPO": False,
                 "DATABASE_URL": False,
-                "SUPABASE_KEY": False,
-                "STRIPE_SECRET_KEY": False,
-                "VERCEL_TOKEN": False,
                 "GITHUB_TOKEN": False,
                 "PWD": False,
+                "OURA_CLIENT_SECRET": False,
+                "MOOD_TOKEN": False,
+                "ACME_API_KEY": False,
+                # What a model CLI provably needs survives.
+                "PATH": True,
+                "HOME": True,
+                "ANTHROPIC_API_KEY": "provider-key",
             },
         )
 

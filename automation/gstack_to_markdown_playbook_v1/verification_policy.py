@@ -7,6 +7,10 @@ from pathlib import Path
 from .ir_models import StackProfile
 from .path_policy import classify_path, normalize_repo_path
 
+# Deliberately broad: includes config/data formats (.json/.yaml/.toml/.ini/.cfg)
+# so a row producing one is pushed to declare a red->green verification command.
+# This errs toward over-verifying rather than shipping an unverified change.
+# See README "Design notes".
 BEHAVIORAL_SUFFIXES = {
     ".py",
     ".pyi",

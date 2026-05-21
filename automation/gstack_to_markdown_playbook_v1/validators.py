@@ -297,6 +297,10 @@ def _validate_row(row: CandidateRow, defined_ids: set[str], *, repo_root: Path |
         ))
 
     # Verification command safety applies to every row, including docs-only rows.
+    # Two-tier severity by design: known-dangerous commands are hard errors;
+    # a command merely outside the allowlist is a warning, so a project's own
+    # legitimate test command is not hard-rejected. Unknown commands are then
+    # accepted explicitly via --allow-warnings REASON. See README "Design notes".
     for command in row.required_verification_commands:
         for finding in validate_verification_command(command):
             findings.append(_finding(

@@ -26,29 +26,67 @@ class ModelClientError(RuntimeError):
     pass
 
 
-REDACT_ENV_PREFIXES = (
-    "PRODUCT_REPO",
-    "DATABASE_URL",
-    "SUPABASE",
-    "STRIPE",
-    "VERCEL",
-    "AWS_SECRET",
-    "AWS_ACCESS",
-    "GITHUB_TOKEN",
+# Environment passed to model-backed row-author commands.
+#
+# This is an ALLOWLIST, not a denylist: only variables a model CLI provably
+# needs are forwarded. Every other variable — including the product repo's
+# ambient secrets (database URLs, device credentials, cloud tokens, generic
+# *_TOKEN / *_SECRET / *_KEY values) — is dropped, so a row-author subprocess
+# never sees them. A denylist cannot enumerate every secret name; an allowlist
+# is closed by construction.
+#
+# Provider credentials (ANTHROPIC_*, OPENAI_*) are forwarded deliberately: the
+# row-author CLI cannot authenticate to its model without them. That is the one
+# secret class the row author legitimately requires. A custom row-author
+# command that needs additional variables can opt into full inheritance with
+# --row-author-inherit-env.
+ENV_ALLOWLIST_NAMES = frozenset(
+    {
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "TERM",
+        "TMPDIR",
+        "TZ",
+        "LANG",
+        "NO_COLOR",
+        # TLS trust + proxy: a network CLI needs these to reach its provider;
+        # they are paths/URLs, not application secrets.
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+        "NODE_EXTRA_CA_CERTS",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "no_proxy",
+    }
+)
+ENV_ALLOWLIST_PREFIXES = (
+    "LC_",         # locale
+    "XDG_",        # config/cache directory resolution
+    "ANTHROPIC_",  # claude provider configuration and credentials
+    "OPENAI_",     # codex / openai provider configuration and credentials
+    "CLAUDE_",     # claude code CLI configuration
+    "CODEX_",      # codex CLI configuration
 )
 
 
 def _sanitized_env() -> dict[str, str]:
-    env = os.environ.copy()
-    env.pop("PWD", None)
-    env.pop("OLDPWD", None)
-    env.pop("PRODUCT_REPO", None)
+    """Return an allowlisted environment for model-backed row-author commands.
 
-    for key in list(env):
-        upper = key.upper()
-        if any(upper == prefix or upper.startswith(prefix + "_") for prefix in REDACT_ENV_PREFIXES):
-            env.pop(key, None)
-
+    Only variables a model CLI provably needs are forwarded. Every other
+    variable — including the product repo's ambient secrets — is dropped.
+    """
+    env: dict[str, str] = {}
+    for key, value in os.environ.items():
+        if key in ENV_ALLOWLIST_NAMES or key.startswith(ENV_ALLOWLIST_PREFIXES):
+            env[key] = value
     return env
 
 

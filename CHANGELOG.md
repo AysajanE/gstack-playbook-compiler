@@ -24,12 +24,18 @@ and this project aims to follow [Semantic Versioning](https://semver.org/).
 - Source artifact paths are recorded repo-relative when `--repo-root` is known.
 - Source inputs must be promoted under `docs/gstack/` or `docs/briefs/` by
   default, with an explicit noncanonical-input escape hatch for tests.
-- External row-author commands run from an isolated temporary cwd with a
-  sanitized environment by default.
+- External row-author commands run from an isolated temporary cwd with an
+  allowlisted environment by default: only variables a model CLI provably needs
+  (PATH, HOME, locale, TLS/proxy, provider credentials) are forwarded, so
+  ambient repo secrets — including generic `*_TOKEN` / `*_SECRET` / `*_KEY`
+  values a denylist cannot enumerate — never reach the subprocess.
 - Verification commands are safety-checked for every row, including docs-only
   rows.
 - The emitter always writes all six `markdown_playbook_v1` sections and refuses
   raw pipe characters instead of mutating them.
+- README records the Step-2 design choices (two-tier verification-command
+  severity, broad behavioral-path classification, parser-bounded plan
+  coverage).
 
 ## [0.1.0] - 2026-05-20
 
