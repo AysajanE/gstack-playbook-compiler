@@ -6,8 +6,9 @@ Stages:
     3. validators         → compiler_validation_report_v1
     4. emit_markdown      → markdown_playbook_v1
 
-The shipped author is deterministic stub-only. LLM row authoring and one bounded
-repair attempt are intentionally not wired yet.
+Model-backed row authoring is available through bounded JSON-only external
+commands. Python still owns validation, repair limits, and final markdown
+emission.
 """
 
 __version__ = "0.1.0"

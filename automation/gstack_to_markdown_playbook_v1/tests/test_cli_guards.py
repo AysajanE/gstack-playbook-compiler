@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -23,6 +24,98 @@ Build a small reviewed artifact.
             encoding="utf-8",
         )
         return design
+
+    def _autoplan(self, root: Path) -> Path:
+        autoplan = root / "docs" / "gstack" / "demo-autoplan.md"
+        autoplan.write_text(
+            """
+# Autoplan
+
+## Implementation Tasks
+
+### Backend
+
+- [ ] Add the mood API endpoint
+  Files: `src/api/mood.py`; `tests/test_mood_api.py`
+  Verify: `python -m pytest tests/test_mood_api.py`
+""",
+            encoding="utf-8",
+        )
+        return autoplan
+
+    def _fake_author_script(self, root: Path, payload: dict) -> Path:
+        script = root / "fake_author.py"
+        script.write_text(
+            "import sys\n"
+            "sys.stdin.read()\n"
+            f"print({json.dumps(json.dumps(payload))})\n",
+            encoding="utf-8",
+        )
+        return script
+
+    def _repairing_author_script(self, root: Path, first_payload: dict, repaired_payload: dict) -> Path:
+        script = root / "repairing_author.py"
+        state = root / "repairing_author.state"
+        script.write_text(
+            "from pathlib import Path\n"
+            "import sys\n"
+            "sys.stdin.read()\n"
+            f"state = Path({json.dumps(str(state))})\n"
+            "if state.exists():\n"
+            f"    print({json.dumps(json.dumps(repaired_payload))})\n"
+            "else:\n"
+            "    state.write_text('1', encoding='utf-8')\n"
+            f"    print({json.dumps(json.dumps(first_payload))})\n",
+            encoding="utf-8",
+        )
+        return script
+
+    def _valid_model_payload(self) -> dict:
+        return {
+            "schema_version": "po_candidate_rows_v1",
+            "rows": [
+                {
+                    "step_id": "01",
+                    "phase": "Backend",
+                    "action": "Implement the mood API endpoint and targeted regression test.",
+                    "why_now": "This is the approved backend implementation task.",
+                    "owner_type": "agent",
+                    "prerequisites": "none",
+                    "repo_surfaces": [
+                        "docs/gstack/demo-office-hours.md",
+                        "src/api/mood.py",
+                        "tests/test_mood_api.py",
+                    ],
+                    "deliverable": ["src/api/mood.py", "tests/test_mood_api.py"],
+                    "exit_criteria": "python -m pytest tests/test_mood_api.py passes and src/api/mood.py exposes the endpoint.",
+                    "allowed_write_roots": ["src/api", "tests/test_mood_api.py"],
+                    "requires_red_green": True,
+                    "manual_gate": "none",
+                    "manual_gate_reason": "",
+                    "manual_gate_evidence": [],
+                    "external_check": "none",
+                    "external_dependencies": [],
+                    "consult_paths": [],
+                    "required_verification_commands": ["python -m pytest tests/test_mood_api.py"],
+                    "required_verification_artifacts": [],
+                    "notes": ["source_task: task_001"],
+                }
+            ],
+            "support_sections": {
+                "plan_context": "Build a mood API.",
+                "phase_details": [
+                    {
+                        "phase_slug": "backend",
+                        "title": "Backend",
+                        "body": "Implement the backend endpoint and regression coverage.",
+                    }
+                ],
+                "shared_guidance": [],
+                "risks_and_contingencies": "No special risks.",
+                "immediate_next_actions": "Run the required verification command.",
+            },
+            "compiler_warnings": [],
+        }
 
     def test_non_dry_run_stub_fails_without_explicit_allow(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -129,6 +222,92 @@ Build a small reviewed artifact.
 
             self.assertEqual(rc, 2)
             self.assertFalse(out.exists())
+
+    def test_external_json_author_emits_playbook_and_author_sidecars(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for rel in ["src/api/mood.py", "tests/test_mood_api.py"]:
+                path = root / rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("# file\n", encoding="utf-8")
+            out = root / "docs" / "playbooks" / "demo.playbook.md"
+            script = self._fake_author_script(root, self._valid_model_payload())
+
+            rc = main([
+                "compile",
+                "--repo-root", str(root),
+                "--design", str(self._design(root)),
+                "--autoplan", str(self._autoplan(root)),
+                "--out", str(out),
+                "--row-author", "external-json",
+                "--row-author-command", f"{sys.executable} {script}",
+                "--skip-po-verify", "unit test",
+            ])
+
+            self.assertEqual(rc, 0)
+            self.assertTrue(out.exists())
+            validation = json.loads(out.with_name("demo.validation.json").read_text(encoding="utf-8"))
+            self.assertEqual(validation["status"], "pass")
+            self.assertTrue(out.with_name("demo.rows.json").exists())
+            self.assertTrue(out.with_name("demo.author_input.json").exists())
+            trace = json.loads(out.with_name("demo.author_trace.json").read_text(encoding="utf-8"))
+            self.assertEqual(trace["source_task_to_rows"], {"task_001": ["01"]})
+
+    def test_external_json_author_fails_closed_without_implementation_tasks(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            out = root / "docs" / "playbooks" / "demo.playbook.md"
+            script = self._fake_author_script(root, self._valid_model_payload())
+
+            rc = main([
+                "compile",
+                "--repo-root", str(root),
+                "--design", str(self._design(root)),
+                "--out", str(out),
+                "--row-author", "external-json",
+                "--row-author-command", f"{sys.executable} {script}",
+                "--skip-po-verify", "unit test",
+            ])
+
+            self.assertEqual(rc, 3)
+            self.assertFalse(out.exists())
+            validation = json.loads(out.with_name("demo.validation.json").read_text(encoding="utf-8"))
+            self.assertEqual(validation["errors"][0]["code"], "AUTHOR_NO_IMPLEMENTATION_TASKS")
+            author_input = json.loads(out.with_name("demo.author_input.json").read_text(encoding="utf-8"))
+            self.assertEqual(author_input["schema_version"], "row_author_context_v1")
+
+    def test_external_json_author_uses_one_bounded_repair_attempt(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for rel in ["src/api/mood.py", "tests/test_mood_api.py"]:
+                path = root / rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("# file\n", encoding="utf-8")
+            out = root / "docs" / "playbooks" / "demo.playbook.md"
+            first_payload = self._valid_model_payload()
+            first_payload["rows"][0]["allowed_write_roots"] = ["src"]
+            script = self._repairing_author_script(root, first_payload, self._valid_model_payload())
+
+            rc = main([
+                "compile",
+                "--repo-root", str(root),
+                "--design", str(self._design(root)),
+                "--autoplan", str(self._autoplan(root)),
+                "--out", str(out),
+                "--row-author", "external-json",
+                "--row-author-command", f"{sys.executable} {script}",
+                "--skip-po-verify", "unit test",
+            ])
+
+            self.assertEqual(rc, 0)
+            validation = json.loads(out.with_name("demo.validation.json").read_text(encoding="utf-8"))
+            self.assertEqual(validation["status"], "repaired_pass")
+            self.assertEqual(validation["repair_attempts"], 1)
+            meta = json.loads(out.with_name("demo.playbook.meta.json").read_text(encoding="utf-8"))
+            self.assertTrue(meta["row_repair_attempted"])
+            trace = json.loads(out.with_name("demo.author_trace.json").read_text(encoding="utf-8"))
+            self.assertTrue(trace["repair_attempted"])
+            self.assertIn("repair_trace", trace)
 
 
 if __name__ == "__main__":

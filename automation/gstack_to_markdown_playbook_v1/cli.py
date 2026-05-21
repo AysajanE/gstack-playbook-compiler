@@ -20,12 +20,17 @@ import json
 import os
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from . import __version__
+from . import VALIDATION_REPORT_SCHEMA_ID
 from .emit_markdown import emit_playbook_markdown
+from .llm_clients import ModelClientError
 from .parse_gstack import parse
-from .row_author import get_author
+from .quality_gates import validate_author_quality, warnings_as_compiler_warnings
+from .row_author import RowAuthorError, RowAuthorOptions, build_author_trace, get_author
+from .row_repair import repair_rows
 from .stack_detect import detect
 from .validators import validate, validate_ir_payload
 
@@ -46,7 +51,64 @@ def _build_parser() -> argparse.ArgumentParser:
     compile_p.add_argument("--out", required=True, type=Path, help="Output path for the playbook markdown.")
     compile_p.add_argument(
         "--row-author", default="stub",
-        help="Row author implementation: 'stub' (default), 'claude', or 'codex'. Only 'stub' is wired in v0.",
+        choices=["stub", "claude", "codex", "external-json"],
+        help=(
+            "Row author implementation: 'stub' (default), 'claude', 'codex', or "
+            "'external-json'. Model-backed authors must output po_candidate_rows_v1 JSON."
+        ),
+    )
+    compile_p.add_argument(
+        "--row-author-command",
+        default="",
+        help=(
+            "Override command for model-backed row authors. The rendered prompt is sent on stdin; "
+            "stdout must be a single JSON object."
+        ),
+    )
+    compile_p.add_argument(
+        "--row-author-timeout-sec",
+        type=int,
+        default=180,
+        help="Timeout in seconds for each model-backed row authoring or repair call.",
+    )
+    compile_p.add_argument(
+        "--row-author-temperature",
+        type=float,
+        default=0.0,
+        help="Recorded row-author temperature hint. External command authors receive only the prompt.",
+    )
+    repair_group = compile_p.add_mutually_exclusive_group()
+    repair_group.add_argument(
+        "--row-repair",
+        dest="row_repair",
+        action="store_true",
+        default=True,
+        help="Allow one bounded model-backed repair attempt after validation failure (default).",
+    )
+    repair_group.add_argument(
+        "--no-row-repair",
+        dest="row_repair",
+        action="store_false",
+        help="Disable the bounded repair attempt after validation failure.",
+    )
+    compile_p.add_argument(
+        "--keep-author-artifacts",
+        action="store_true",
+        help="Write .ir.json, .rows.json, .author_input.json, and .author_trace.json on successful compiles.",
+    )
+    compile_p.add_argument(
+        "--max-authored-rows",
+        type=int,
+        default=25,
+        help="Maximum rows the author context asks a model-backed author to produce.",
+    )
+    compile_p.add_argument(
+        "--allow-planning-gap-rows",
+        action="store_true",
+        help=(
+            "If implementation tasks are behavioral but have no concrete paths, emit deterministic "
+            "docs-only planning-gap rows instead of failing."
+        ),
     )
     compile_p.add_argument("--human-approved-by", default="", help="Name written into the playbook provenance header.")
     compile_p.add_argument("--dry-run", action="store_true", help="Use the deterministic stub author regardless of --row-author.")
@@ -92,13 +154,15 @@ def _slug(out_md: Path) -> str:
 
 
 def _sidecar_path(out_md: Path, kind: str) -> Path:
-    """kind is one of: 'meta', 'validation', 'ir', 'rows'."""
+    """kind is one of: 'meta', 'validation', 'ir', 'rows', 'author_input', 'author_trace'."""
     base = _slug(out_md)
     suffix = {
         "meta": ".playbook.meta.json",
         "validation": ".validation.json",
         "ir": ".ir.json",
         "rows": ".rows.json",
+        "author_input": ".author_input.json",
+        "author_trace": ".author_trace.json",
     }[kind]
     return out_md.with_name(base + suffix)
 
@@ -133,6 +197,64 @@ def _compiler_git_sha() -> str | None:
     if result.returncode != 0:
         return None
     return result.stdout.strip() or None
+
+
+def _failure_report(code: str, message: str) -> dict:
+    return {
+        "schema_version": VALIDATION_REPORT_SCHEMA_ID,
+        "validated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "status": "fail",
+        "errors": [
+            {
+                "code": code,
+                "severity": "error",
+                "message": message,
+            }
+        ],
+        "warnings": [],
+        "row_summaries": [],
+        "repair_attempts": 0,
+    }
+
+
+def _report_passed(report: dict) -> bool:
+    return report.get("status") in {"pass", "repaired_pass"} and not report.get("errors")
+
+
+def _merge_quality_into_report(report: dict, quality: dict) -> dict:
+    report["errors"] = [*report.get("errors", []), *quality.get("errors", [])]
+    report["warnings"] = [*report.get("warnings", []), *quality.get("warnings", [])]
+    if report["errors"]:
+        report["status"] = "fail"
+    return report
+
+
+def _append_compiler_warnings(bundle, warnings: list[str]) -> None:
+    seen = set(bundle.compiler_warnings)
+    for warning in warnings:
+        if warning not in seen:
+            bundle.compiler_warnings.append(warning)
+            seen.add(warning)
+
+
+def _write_diagnostic_sidecars(
+    *,
+    out_md: Path,
+    ir_payload: dict,
+    report: dict,
+    bundle=None,
+    author_input: dict | None = None,
+    author_trace: dict | None = None,
+) -> None:
+    out_md.parent.mkdir(parents=True, exist_ok=True)
+    _write_sidecar(out_md, "validation", report)
+    _write_sidecar(out_md, "ir", ir_payload)
+    if bundle is not None:
+        _write_sidecar(out_md, "rows", bundle.to_dict())
+    if author_input is not None:
+        _write_sidecar(out_md, "author_input", author_input)
+    if author_trace is not None:
+        _write_sidecar(out_md, "author_trace", author_trace)
 
 
 def _print_next_steps(out_md: Path, plan_orchestrator_root: Path | None) -> None:
@@ -320,19 +442,48 @@ def cmd_compile(args: argparse.Namespace) -> int:
         )
         return 2
     try:
-        author = get_author(author_name)
-    except NotImplementedError as e:
+        author = get_author(author_name, command=args.row_author_command)
+    except (ModelClientError, NotImplementedError, ValueError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
-    bundle = author(ir)
-    if ir.manual_gate_hints and all(row.manual_gate == "none" for row in bundle.rows):
-        bundle.compiler_warnings.append(
-            "manual_gate_hints_ignored: source artifacts mention manual approval/review, but no row has a manual_gate."
+    author_options = RowAuthorOptions(
+        timeout_sec=args.row_author_timeout_sec,
+        repair_enabled=args.row_repair,
+        max_rows=args.max_authored_rows,
+        allow_planning_gap_rows=args.allow_planning_gap_rows,
+        temperature=args.row_author_temperature,
+    )
+    try:
+        author_result = author.author(
+            ir=ir,
+            repo_root=repo_root,
+            options=author_options,
         )
-    if ir.external_dependency_hints and all(row.external_check == "none" for row in bundle.rows):
-        bundle.compiler_warnings.append(
-            "external_dependency_hints_ignored: source artifacts mention external dependencies, but no row requires external evidence."
+    except RowAuthorError as e:
+        report = _failure_report(e.code, e.message)
+        print(f"error: {e.message}", file=sys.stderr)
+        _write_diagnostic_sidecars(
+            out_md=out_md,
+            ir_payload=ir.to_dict(),
+            report=report,
+            bundle=e.bundle,
+            author_input=e.author_input,
+            author_trace=e.trace,
         )
+        return 3
+    bundle = author_result.bundle
+    author_input = author_result.author_input
+    author_trace = author_result.trace
+
+    if author_name == "stub":
+        if ir.manual_gate_hints and all(row.manual_gate == "none" for row in bundle.rows):
+            bundle.compiler_warnings.append(
+                "manual_gate_hints_ignored: source artifacts mention manual approval/review, but no row has a manual_gate."
+            )
+        if ir.external_dependency_hints and all(row.external_check == "none" for row in bundle.rows):
+            bundle.compiler_warnings.append(
+                "external_dependency_hints_ignored: source artifacts mention external dependencies, but no row requires external evidence."
+            )
     if author_name == "stub" and not args.dry_run and args.allow_stub_output:
         _force_stub_manual_gates(bundle)
         bundle.compiler_warnings.append(
@@ -341,27 +492,99 @@ def cmd_compile(args: argparse.Namespace) -> int:
 
     # Stage 3: validate
     report = validate(bundle, repo_root=repo_root)
-    if report["status"] != "pass":
-        # v0 does not do automatic repair; surface errors and refuse to emit.
+    quality = {"status": "pass", "errors": [], "warnings": []}
+    if author_name != "stub":
+        quality = validate_author_quality(
+            bundle=bundle,
+            ir=ir,
+            author_context=author_input,
+        )
+        _append_compiler_warnings(bundle, warnings_as_compiler_warnings(quality))
+        report = _merge_quality_into_report(report, quality)
+
+    repair_attempted = False
+    if (
+        not _report_passed(report)
+        and author_name != "stub"
+        and author_options.repair_enabled
+        and getattr(author, "model_client", None) is not None
+    ):
+        repair_attempted = True
+        report["repair_attempts"] = 1
+        try:
+            original_author_trace = dict(author_trace)
+            repair_result = repair_rows(
+                ir=ir,
+                author_context=author_input,
+                failed_bundle=bundle,
+                validation_report=report,
+                quality_findings=quality,
+                model_client=author.model_client,
+                timeout_sec=author_options.timeout_sec,
+            )
+            bundle = repair_result.bundle
+            author_result.bundle = bundle
+            author_result.repair_attempted = True
+            author_trace = build_author_trace(
+                row_author=f"{author_name}:repaired",
+                prompt="",
+                bundle=bundle,
+                author_context=author_input,
+                warnings=list(bundle.compiler_warnings),
+            )
+            author_trace["repair_attempted"] = True
+            author_trace["initial_trace"] = original_author_trace
+            author_trace["repair_trace"] = repair_result.trace
+            report = validate(bundle, repo_root=repo_root)
+            quality = validate_author_quality(
+                bundle=bundle,
+                ir=ir,
+                author_context=author_input,
+            )
+            _append_compiler_warnings(bundle, warnings_as_compiler_warnings(quality))
+            report = _merge_quality_into_report(report, quality)
+            report["repair_attempts"] = 1
+            if _report_passed(report):
+                report["status"] = "repaired_pass"
+        except Exception as e:  # noqa: BLE001 - repair must fail closed with diagnostics.
+            report.setdefault("errors", []).append(
+                {
+                    "code": "AUTHOR_REPAIR_FAILED",
+                    "severity": "error",
+                    "message": f"bounded row repair failed: {e}",
+                }
+            )
+            report["status"] = "fail"
+            author_trace["repair_attempted"] = True
+            author_trace["repair_error"] = str(e)
+
+    if not _report_passed(report):
         print("error: compiler preflight failed; refusing to emit playbook.", file=sys.stderr)
         for err in report["errors"]:
             loc = err.get("step_id", "-")
             col = err.get("column", "-")
             print(f"  [{err['code']}] step={loc} col={col}: {err['message']}", file=sys.stderr)
-        # Still write the report + IR + rows for diagnosis.
-        out_md.parent.mkdir(parents=True, exist_ok=True)
-        _write_sidecar(out_md, "validation", report)
-        _write_sidecar(out_md, "ir", ir.to_dict())
-        _write_sidecar(out_md, "rows", bundle.to_dict())
+        _write_diagnostic_sidecars(
+            out_md=out_md,
+            ir_payload=ir.to_dict(),
+            report=report,
+            bundle=bundle,
+            author_input=author_input,
+            author_trace=author_trace,
+        )
         return 3
     if bundle.compiler_warnings and not args.dry_run and not args.allow_warnings:
         print("error: non-dry-run compiler warnings require --allow-warnings REASON.", file=sys.stderr)
         for w in bundle.compiler_warnings:
             print(f"  - {w}", file=sys.stderr)
-        out_md.parent.mkdir(parents=True, exist_ok=True)
-        _write_sidecar(out_md, "validation", report)
-        _write_sidecar(out_md, "ir", ir.to_dict())
-        _write_sidecar(out_md, "rows", bundle.to_dict())
+        _write_diagnostic_sidecars(
+            out_md=out_md,
+            ir_payload=ir.to_dict(),
+            report=report,
+            bundle=bundle,
+            author_input=author_input,
+            author_trace=author_trace,
+        )
         return 3
 
     # Stage 4: emit
@@ -405,6 +628,7 @@ def cmd_compile(args: argparse.Namespace) -> int:
         "compiler_git_sha": _compiler_git_sha(),
         "compiled_at": ir.compiled_at,
         "row_author": author_name,
+        "row_repair_attempted": repair_attempted,
         "compiler_preflight": report["status"],
         "po_contract_verification": po_verification,
         "warning_override_reason": args.allow_warnings,
@@ -416,11 +640,21 @@ def cmd_compile(args: argparse.Namespace) -> int:
         "compiler_warnings": bundle.compiler_warnings,
     })
     _write_sidecar(out_md, "validation", report)
+    if args.keep_author_artifacts or author_name != "stub":
+        _write_sidecar(out_md, "ir", ir.to_dict())
+        _write_sidecar(out_md, "rows", bundle.to_dict())
+        _write_sidecar(out_md, "author_input", author_input)
+        _write_sidecar(out_md, "author_trace", author_trace)
 
     print(f"Wrote:")
     print(f"  - {out_md}")
     print(f"  - {_sidecar_path(out_md, 'meta')}")
     print(f"  - {_sidecar_path(out_md, 'validation')}")
+    if args.keep_author_artifacts or author_name != "stub":
+        print(f"  - {_sidecar_path(out_md, 'ir')}")
+        print(f"  - {_sidecar_path(out_md, 'rows')}")
+        print(f"  - {_sidecar_path(out_md, 'author_input')}")
+        print(f"  - {_sidecar_path(out_md, 'author_trace')}")
     if bundle.compiler_warnings:
         print("\nCompiler warnings (review before running PO):")
         for w in bundle.compiler_warnings:

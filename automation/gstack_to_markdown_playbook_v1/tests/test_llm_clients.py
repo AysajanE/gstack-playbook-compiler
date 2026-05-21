@@ -1,0 +1,50 @@
+from __future__ import annotations
+
+import sys
+import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from automation.gstack_to_markdown_playbook_v1.llm_clients import (
+    ExternalCommandJsonClient,
+    parse_json_object_strict,
+    render_prompt,
+)
+
+
+class LlmClientsTest(unittest.TestCase):
+    def test_strict_json_parser_rejects_markdown_or_trailing_text(self) -> None:
+        self.assertEqual(parse_json_object_strict('{"ok": true}'), {"ok": True})
+
+        with self.assertRaises(ValueError):
+            parse_json_object_strict('```json\n{"ok": true}\n```')
+
+        with self.assertRaises(ValueError):
+            parse_json_object_strict('{"ok": true}\nextra')
+
+    def test_external_command_receives_prompt_and_returns_json_stdout(self) -> None:
+        with TemporaryDirectory() as tmp:
+            script = Path(tmp) / "echo_json.py"
+            script.write_text(
+                "import json, sys\n"
+                "prompt = sys.stdin.read()\n"
+                "print(json.dumps({'prompt_has_marker': 'MARKER' in prompt}))\n",
+                encoding="utf-8",
+            )
+            client = ExternalCommandJsonClient(f"{sys.executable} {script}")
+
+            raw = client.complete_json(prompt="hello MARKER", timeout_sec=10)
+
+        self.assertEqual(parse_json_object_strict(raw), {"prompt_has_marker": True})
+
+    def test_render_prompt_replaces_all_placeholders(self) -> None:
+        prompt = render_prompt("row_author_v2.md", {"IR_JSON": "IR", "AUTHOR_CONTEXT_JSON": "CTX"})
+
+        self.assertIn("IR", prompt)
+        self.assertIn("CTX", prompt)
+        self.assertNotIn("{{IR_JSON}}", prompt)
+        self.assertNotIn("{{AUTHOR_CONTEXT_JSON}}", prompt)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -82,6 +82,11 @@ def validate_ir_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return _schema_findings(payload, "gstack_plan_ir_v1.schema.json", label="gstack_plan_ir_v1")
 
 
+def validate_rows_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Validate raw po_candidate_rows_v1 JSON before dataclass normalization."""
+    return _schema_findings(payload, "po_candidate_rows_v1.schema.json", label="po_candidate_rows_v1")
+
+
 def validate_report_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
     """Validate compiler_validation_report_v1 JSON against the bundled schema."""
     return _schema_findings(
