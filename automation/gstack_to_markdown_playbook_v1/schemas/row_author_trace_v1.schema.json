@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "row_author_trace_v1",
+  "title": "row_author_trace_v1",
+  "description": "Trace sidecar for Step-2 row authoring.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "row_author",
+    "repair_attempted",
+    "source_task_to_rows",
+    "row_to_source_tasks",
+    "invented_paths",
+    "warnings"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": { "const": "row_author_trace_v1" },
+    "row_author": { "type": "string" },
+    "prompt_sha256": { "type": "string" },
+    "repair_attempted": { "type": "boolean" },
+    "source_task_to_rows": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": { "type": "string" }
+      }
+    },
+    "row_to_source_tasks": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": { "type": "string" }
+      }
+    },
+    "invented_paths": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "raw_model_output_sha256": { "type": "string" },
+    "model_stderr_sha256": { "type": "string" },
+    "model_stderr_excerpt": { "type": "string" },
+    "initial_trace": { "type": "object" },
+    "repair_trace": { "type": "object" },
+    "repair_error": { "type": "string" }
+  }
+}

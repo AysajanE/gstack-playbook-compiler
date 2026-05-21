@@ -18,6 +18,7 @@ class FakeClient:
     def __init__(self, payload: dict) -> None:
         self.payload = payload
         self.prompts: list[str] = []
+        self.last_stderr = "repair stderr note"
 
     def complete_json(self, *, prompt: str, timeout_sec: int) -> str:
         self.prompts.append(prompt)
@@ -106,6 +107,9 @@ class RowRepairTest(unittest.TestCase):
 
         self.assertEqual(result.bundle.rows[0].action, _payload()["rows"][0]["action"])
         self.assertEqual(result.trace["schema_version"], "row_repair_trace_v1")
+        self.assertTrue(result.trace["raw_model_output_sha256"])
+        self.assertTrue(result.trace["model_stderr_sha256"])
+        self.assertEqual(result.trace["model_stderr_excerpt"], "repair stderr note")
         self.assertIn("Failed candidate po_candidate_rows_v1", client.prompts[0])
 
 

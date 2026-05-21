@@ -7,6 +7,7 @@ from typing import Any
 
 from .ir_models import GstackPlanIR
 from .path_policy import (
+    classify_path,
     normalize_repo_path,
     path_inside_any_root,
     root_derived_from_known_path,
@@ -14,36 +15,50 @@ from .path_policy import (
 from .row_models import CandidateRow, CandidateRowsBundle
 from .verification_policy import is_behavioral_path, is_test_path
 
-PLACEHOLDER_TERMS = (
-    "placeholder",
-    "scaffold",
-    "tbd",
-    "todo",
-    "unspecified",
-    "fill in",
-    "implement the feature",
-    "update code",
-    "add tests as needed",
-    "various files",
-    "repo changes",
-    "example/path",
+PLACEHOLDER_PATTERNS = (
+    re.compile(r"\bTBD\b", re.I),
+    re.compile(r"\bTODO\b"),
+    re.compile(r"\bfill in\b", re.I),
+    re.compile(r"\bplaceholder\b", re.I),
+    re.compile(r"\.placeholder\b", re.I),
+    re.compile(r"\bexample/path\b", re.I),
+    re.compile(r"\bvarious files\b", re.I),
+    re.compile(r"\brepo changes\b", re.I),
+    re.compile(r"\badd tests as needed\b", re.I),
+    re.compile(r"\bcompiler-stub\b", re.I),
 )
 ACTION_VERBS = (
     "add",
+    "build",
+    "convert",
     "create",
-    "implement",
-    "wire",
-    "refactor",
-    "update",
-    "replace",
-    "introduce",
-    "move",
-    "extract",
-    "write",
-    "validate",
-    "document",
     "configure",
+    "delete",
+    "document",
+    "draft",
+    "expose",
+    "extend",
+    "extract",
+    "generate",
+    "implement",
+    "introduce",
     "migrate",
+    "move",
+    "normalize",
+    "publish",
+    "refactor",
+    "register",
+    "remove",
+    "replace",
+    "run",
+    "seed",
+    "test",
+    "turn",
+    "update",
+    "validate",
+    "verify",
+    "wire",
+    "write",
 )
 RISKY_MANUAL_GATE_TERMS = (
     "security",
@@ -55,6 +70,16 @@ RISKY_MANUAL_GATE_TERMS = (
     "presenter",
     "release",
     "secret",
+)
+RISKY_TEXT_TERMS = (
+    "auth",
+    "authorization",
+    "permission",
+    "secret",
+    "payment",
+    "stripe",
+    "deploy",
+    "production",
 )
 
 
@@ -78,10 +103,19 @@ def _tokens_from_prereqs(value: str) -> list[str]:
     raw = value.strip()
     if not raw or raw.lower() == "none":
         return []
-    if re.fullmatch(r"[0-9]{2}-[0-9]{2}", raw):
-        start, end = raw.split("-")
-        return [start, end]
-    return [part.strip() for part in raw.split(",") if part.strip()]
+    out: list[str] = []
+    for token in [part.strip() for part in raw.split(",") if part.strip()]:
+        if re.fullmatch(r"[0-9]{2}-[0-9]{2}", token):
+            start, end = token.split("-")
+            if int(start) > int(end):
+                out.extend([start, end])
+                continue
+            width = max(len(start), len(end))
+            for value in range(int(start), int(end) + 1):
+                out.append(str(value).zfill(width))
+        else:
+            out.append(token)
+    return out
 
 
 def _all_path_values(row: CandidateRow) -> list[tuple[str, str]]:
@@ -113,10 +147,9 @@ def _has_placeholder_text(row: CandidateRow) -> tuple[str, str] | None:
         ("notes", " ".join(row.notes)),
     ]
     for column, text in fields:
-        lower = text.lower()
-        for term in PLACEHOLDER_TERMS:
-            if term in lower:
-                return column, term
+        for pattern in PLACEHOLDER_PATTERNS:
+            if pattern.search(text):
+                return column, pattern.pattern
     return None
 
 
@@ -155,6 +188,16 @@ def validate_author_quality(
     errors: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
 
+    max_rows = int(author_context.get("global_rules", {}).get("max_rows", 25))
+    if len(bundle.rows) > max_rows:
+        errors.append(
+            _finding(
+                "AUTHOR_TOO_MANY_ROWS",
+                "error",
+                f"author emitted {len(bundle.rows)} rows, exceeding max_rows={max_rows}",
+            )
+        )
+
     for finding in author_context.get("context_findings", []):
         severity = finding.get("severity", "error")
         target = errors if severity == "error" else warnings
@@ -174,6 +217,11 @@ def validate_author_quality(
         normalize_repo_path(entry.get("path", "")): entry
         for entry in author_context.get("path_ledger", [])
         if entry.get("path")
+    }
+    safe_deliverable_paths = {
+        path
+        for path, entry in path_ledger.items()
+        if entry.get("safe_as_deliverable", False)
     }
 
     seen_ids: set[str] = set()
@@ -198,7 +246,7 @@ def validate_author_quality(
         if action_error:
             errors.append(
                 _finding(
-                    "AUTHOR_PLACEHOLDER_TEXT",
+                    "AUTHOR_ACTION_TOO_VAGUE",
                     "error",
                     action_error,
                     step_id=row.step_id,
@@ -209,7 +257,7 @@ def validate_author_quality(
         if not _exit_criteria_specific(row):
             errors.append(
                 _finding(
-                    "AUTHOR_PLACEHOLDER_TEXT",
+                    "AUTHOR_EXIT_CRITERIA_TOO_VAGUE",
                     "error",
                     "exit_criteria must reference a deliverable, command outcome, behavior, or artifact",
                     step_id=row.step_id,
@@ -240,11 +288,23 @@ def validate_author_quality(
                             column=column,
                         )
                     )
+            elif column == "deliverable":
+                entry = path_ledger.get(path)
+                if entry and not entry.get("safe_as_deliverable", False):
+                    errors.append(
+                        _finding(
+                            "AUTHOR_UNSAFE_DELIVERABLE_PATH",
+                            "error",
+                            f"deliverable path {path!r} is not marked safe_as_deliverable in the author path ledger",
+                            step_id=row.step_id,
+                            column=column,
+                        )
+                    )
 
         for root in row.allowed_write_roots:
             normalized = normalize_repo_path(root)
             if normalized not in known_write_roots and not root_derived_from_known_path(
-                normalized, known_paths
+                normalized, safe_deliverable_paths
             ):
                 errors.append(
                     _finding(
@@ -321,18 +381,50 @@ def validate_author_quality(
                     )
                 )
 
-        if any(path.endswith(".sql") for path in row.deliverable):
-            text = " ".join([row.manual_gate, *row.required_verification_commands]).lower()
-            if "migration" not in text and row.manual_gate == "none":
+        for path in row.deliverable:
+            kind = classify_path(path)
+            if kind == "db":
+                text = " ".join(row.required_verification_commands).lower()
+                if not any(term in text for term in ("migration", "schema", "dry", "rollback")):
+                    warnings.append(
+                        _finding(
+                            "AUTHOR_DB_WITHOUT_MIGRATION_VERIFICATION",
+                            "warning",
+                            "database deliverable should include migration/schema/rollback verification",
+                            step_id=row.step_id,
+                            column="required_verification_commands",
+                        )
+                    )
+                if row.manual_gate == "none":
+                    warnings.append(
+                        _finding(
+                            "AUTHOR_DB_WITHOUT_MANUAL_GATE",
+                            "warning",
+                            "database deliverable should usually require manual signoff",
+                            step_id=row.step_id,
+                            column="manual_gate",
+                        )
+                    )
+            if kind == "infra" and row.manual_gate == "none":
                 warnings.append(
                     _finding(
-                        "AUTHOR_SQL_WITHOUT_MIGRATION_CHECK",
+                        "AUTHOR_INFRA_WITHOUT_MANUAL_GATE",
                         "warning",
-                        "SQL deliverable should have migration verification or a manual gate",
-                        step_id=row.step_id,
-                        column="required_verification_commands",
+                        "infra deliverable should usually require manual signoff",
+                        step_id=row.step_id, column="manual_gate",
                     )
                 )
+        risky_text = " ".join([row.phase, row.action, *row.deliverable, *row.notes]).lower()
+        if row.manual_gate == "none" and any(term in risky_text for term in RISKY_TEXT_TERMS):
+            warnings.append(
+                _finding(
+                    "AUTHOR_RISKY_ROW_WITHOUT_MANUAL_GATE",
+                    "warning",
+                    "risky auth/security/payment/deploy/production row should usually require manual signoff",
+                    step_id=row.step_id,
+                    column="manual_gate",
+                )
+            )
 
         if row.deliverable and row.allowed_write_roots:
             for deliverable in row.deliverable:

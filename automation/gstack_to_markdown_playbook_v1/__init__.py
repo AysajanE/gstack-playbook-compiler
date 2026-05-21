@@ -11,7 +11,7 @@ commands. Python still owns validation, repair limits, and final markdown
 emission.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 IR_SCHEMA_ID = "gstack_plan_ir_v1"
 ROWS_SCHEMA_ID = "po_candidate_rows_v1"

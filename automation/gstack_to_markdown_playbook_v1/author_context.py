@@ -41,6 +41,23 @@ def _source_artifact_paths(ir: GstackPlanIR, repo_root: Path) -> list[str]:
     return out
 
 
+def _existing_parent_surfaces(path: str, repo_root: Path) -> list[str]:
+    p = normalize_repo_path(path)
+    out: list[str] = []
+    if "/" not in p:
+        return out
+
+    parent = p.rsplit("/", 1)[0]
+    while parent and parent != ".":
+        if (repo_root / parent).is_dir():
+            out.append(parent)
+            break
+        if "/" not in parent:
+            break
+        parent = parent.rsplit("/", 1)[0]
+    return out
+
+
 def _add_ledger_entry(
     ledger: dict[str, dict[str, Any]],
     *,
@@ -147,9 +164,21 @@ def build_author_context(
                 mentioned_by=task_id,
                 safe_as_deliverable=True,
             )
+            for parent in _existing_parent_surfaces(path, repo_root):
+                _add_ledger_entry(
+                    ledger,
+                    path=parent,
+                    repo_root=repo_root,
+                    mentioned_by=task_id,
+                    safe_as_deliverable=False,
+                )
+                ledger[parent]["safe_as_repo_surface"] = True
 
         existing_repo_surfaces = list(source_paths)
         for path in files:
+            for parent in _existing_parent_surfaces(path, repo_root):
+                if parent not in existing_repo_surfaces:
+                    existing_repo_surfaces.append(parent)
             entry = ledger.get(path)
             if entry and entry["safe_as_repo_surface"] and path not in existing_repo_surfaces:
                 existing_repo_surfaces.append(path)
@@ -161,6 +190,7 @@ def build_author_context(
                 suggested_roots.append(root)
 
         behavioral = task_requires_red_green(files)
+        missing_declared_files = not files
         missing_paths_behavioral = not files and task_text_looks_behavioral(task.task, task.phase)
         verification_candidates = infer_verification_commands(
             task_files=files,
@@ -173,7 +203,7 @@ def build_author_context(
             risk_flags.append("manual_gate_hints_present")
         if ir.external_dependency_hints:
             risk_flags.append("external_dependency_hints_present")
-        if missing_paths_behavioral:
+        if missing_declared_files:
             risk_flags.append("missing_declared_files")
 
         task_cards.append(
@@ -189,6 +219,7 @@ def build_author_context(
                 "suggested_allowed_write_roots": suggested_roots,
                 "clamped_allowed_write_roots": clamp_write_roots(files),
                 "behavioral": behavioral,
+                "missing_declared_files": missing_declared_files,
                 "missing_paths_behavioral": missing_paths_behavioral,
                 "verification_candidates": verification_candidates,
                 "risk_flags": risk_flags,

@@ -110,6 +110,14 @@ def _build_parser() -> argparse.ArgumentParser:
             "docs-only planning-gap rows instead of failing."
         ),
     )
+    compile_p.add_argument(
+        "--row-author-allow-repo-cwd",
+        action="store_true",
+        help=(
+            "Debug-only escape hatch: run the model-backed row author from --repo-root "
+            "instead of an isolated temporary directory."
+        ),
+    )
     compile_p.add_argument("--human-approved-by", default="", help="Name written into the playbook provenance header.")
     compile_p.add_argument("--dry-run", action="store_true", help="Use the deterministic stub author regardless of --row-author.")
     compile_p.add_argument(
@@ -237,6 +245,19 @@ def _append_compiler_warnings(bundle, warnings: list[str]) -> None:
             seen.add(warning)
 
 
+def _report_warnings_as_strings(report: dict) -> list[str]:
+    out: list[str] = []
+    for warning in report.get("warnings", []):
+        code = warning.get("code", "WARNING")
+        message = warning.get("message", "")
+        step = warning.get("step_id")
+        prefix = f"{code}"
+        if step:
+            prefix += f"[{step}]"
+        out.append(f"{prefix}: {message}")
+    return out
+
+
 def _write_diagnostic_sidecars(
     *,
     out_md: Path,
@@ -283,6 +304,18 @@ def _enforce_output_path(repo_root: Path, out_md: Path, *, allow_outside: bool) 
         raise ValueError(
             f"--out must be under {expected_root} unless --allow-outside-playbooks is set."
         )
+
+
+def _repo_relative_required(path: Path, repo_root: Path, *, label: str) -> Path:
+    resolved = path.resolve()
+    try:
+        resolved.relative_to(repo_root.resolve())
+    except ValueError as exc:
+        raise ValueError(
+            f"{label} must be under --repo-root. Promote gstack artifacts into docs/gstack "
+            f"or docs/briefs first: {path}"
+        ) from exc
+    return resolved
 
 
 def _force_stub_manual_gates(bundle) -> None:
@@ -409,6 +442,15 @@ def cmd_compile(args: argparse.Namespace) -> int:
 
     try:
         _enforce_output_path(repo_root, out_md, allow_outside=args.allow_outside_playbooks)
+        design_path = _repo_relative_required(args.design, repo_root, label="--design")
+        autoplan_path = (
+            _repo_relative_required(args.autoplan, repo_root, label="--autoplan")
+            if args.autoplan else None
+        )
+        approved_brief_path = (
+            _repo_relative_required(args.approved_brief, repo_root, label="--approved-brief")
+            if args.approved_brief else None
+        )
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
@@ -418,10 +460,11 @@ def cmd_compile(args: argparse.Namespace) -> int:
 
     # Stage 1: parse
     ir = parse(
-        design_path=args.design.resolve(),
-        autoplan_path=args.autoplan.resolve() if args.autoplan else None,
-        approved_brief_path=args.approved_brief.resolve() if args.approved_brief else None,
+        design_path=design_path,
+        autoplan_path=autoplan_path,
+        approved_brief_path=approved_brief_path,
         stack_profile=stack_profile,
+        repo_root=repo_root,
     )
     ir_schema_errors = validate_ir_payload(ir.to_dict())
     if ir_schema_errors:
@@ -442,7 +485,11 @@ def cmd_compile(args: argparse.Namespace) -> int:
         )
         return 2
     try:
-        author = get_author(author_name, command=args.row_author_command)
+        author = get_author(
+            author_name,
+            command=args.row_author_command,
+            cwd=repo_root if args.row_author_allow_repo_cwd else None,
+        )
     except (ModelClientError, NotImplementedError, ValueError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
@@ -558,6 +605,8 @@ def cmd_compile(args: argparse.Namespace) -> int:
             author_trace["repair_attempted"] = True
             author_trace["repair_error"] = str(e)
 
+    _append_compiler_warnings(bundle, _report_warnings_as_strings(report))
+
     if not _report_passed(report):
         print("error: compiler preflight failed; refusing to emit playbook.", file=sys.stderr)
         for err in report["errors"]:
@@ -594,8 +643,8 @@ def cmd_compile(args: argparse.Namespace) -> int:
         human_approved_by=args.human_approved_by,
     )
     out_md.parent.mkdir(parents=True, exist_ok=True)
-    out_md.write_text(md, encoding="utf-8")
-    emitted_sha256 = _sha256_file(out_md)
+    tmp_out_md = out_md.with_name(out_md.name + ".tmp")
+    tmp_out_md.write_text(md, encoding="utf-8")
 
     should_verify_with_po = bool(args.verify_with_po or plan_orchestrator_root)
     po_verification = {
@@ -607,11 +656,12 @@ def cmd_compile(args: argparse.Namespace) -> int:
         po_verification = {"status": "skipped", "reason": args.skip_po_verify}
     if should_verify_with_po:
         po_verification = _run_po_verification(
-            out_md=out_md,
+            out_md=tmp_out_md,
             plan_orchestrator_root=plan_orchestrator_root,
         )
         if po_verification["status"] != "pass":
             _write_sidecar(out_md, "validation", report)
+            tmp_out_md.unlink(missing_ok=True)
             print("error: PO contract verification failed.", file=sys.stderr)
             for result in po_verification.get("commands", []):
                 print(f"  command: {' '.join(result['command'])}", file=sys.stderr)
@@ -619,6 +669,9 @@ def cmd_compile(args: argparse.Namespace) -> int:
                 if result.get("stderr"):
                     print(result["stderr"], file=sys.stderr)
             return 4
+
+    tmp_out_md.replace(out_md)
+    emitted_sha256 = _sha256_file(out_md)
 
     # Sidecar artifacts
     _write_sidecar(out_md, "meta", {

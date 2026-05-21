@@ -26,6 +26,9 @@ _H3 = re.compile(r"^###\s+(.+?)\s*$", re.MULTILINE)
 # Match `path/like/this.ext` or bare relative paths that contain a slash and a likely extension.
 _PATH_INLINE = re.compile(r"`([^`]+?)`")
 _PATH_BARE = re.compile(r"\b([a-zA-Z_][\w./\-]+/[\w./\-]+\.[a-zA-Z0-9]{1,8})\b")
+_ROOT_FILE_RE = re.compile(
+    r"^(README\.md|CHANGELOG\.md|pyproject\.toml|package\.json|tsconfig\.json|Cargo\.toml|go\.mod|pom\.xml)$"
+)
 _BULLET = re.compile(r"^[\-\*]\s+(.+?)\s*$", re.MULTILINE)
 _TOP_LEVEL_TASK = re.compile(r"^\s*(?:[-*]\s+|\d+[.)]\s+)(?:\[[ xX]\]\s*)?(.+?)\s*$")
 _FIELD_LINE = re.compile(
@@ -39,16 +42,23 @@ _MANUAL_GATE_WORDS = (
     "human review", "reviewer", "presenter review", "security review", "operator confirmation",
 )
 _EXTERNAL_DEP_WORDS = (
-    "open wearables", "oura", "8 sleep", "pyEight", "stripe", "supabase", "vercel",
-    "fastapi", "duckdb", "parquet", "launchd", "iCloud", "tailscale",
+    "open wearables", "oura", "8 sleep", "stripe", "supabase", "vercel",
+    "icloud", "tailscale", "provider status", "external evidence", "api key",
+    "production account",
 )
 
 
-def _hash_file(path: Path) -> SourceArtifact:
+def _hash_file(path: Path, *, repo_root: Path | None = None) -> SourceArtifact:
     data = path.read_bytes()
+    artifact_path = path.as_posix()
+    if repo_root is not None:
+        try:
+            artifact_path = path.resolve().relative_to(repo_root.resolve()).as_posix()
+        except ValueError:
+            artifact_path = path.as_posix()
     return SourceArtifact(
         kind="office_hours",
-        path=str(path),
+        path=artifact_path,
         sha256=hashlib.sha256(data).hexdigest(),
         byte_size=len(data),
     )
@@ -103,7 +113,11 @@ def _extract_candidate_paths(md: str) -> list[str]:
     # Backticked inline tokens first
     for m in _PATH_INLINE.finditer(md):
         token = m.group(1).strip()
-        if "/" in token and not token.startswith(("http://", "https://")) and " " not in token:
+        if (
+            ("/" in token or _ROOT_FILE_RE.match(token))
+            and not token.startswith(("http://", "https://"))
+            and " " not in token
+        ):
             if token not in seen:
                 seen.add(token)
                 found.append(token)
@@ -243,6 +257,52 @@ def _parse_implementation_task_blocks(body: str, phase: str) -> list[Implementat
     return tasks
 
 
+def _parse_markdown_table_rows(body: str) -> list[dict[str, str]]:
+    lines = [line.rstrip() for line in body.splitlines()]
+    rows: list[dict[str, str]] = []
+    for i, line in enumerate(lines):
+        if not line.strip().startswith("|"):
+            continue
+        headers = [c.strip().lower() for c in line.strip().strip("|").split("|")]
+        if not any(h in headers for h in ("task", "implementation task", "action")):
+            continue
+        if i + 1 >= len(lines) or "---" not in lines[i + 1]:
+            continue
+
+        for raw in lines[i + 2:]:
+            if not raw.strip().startswith("|"):
+                break
+            cells = [c.strip() for c in raw.strip().strip("|").split("|")]
+            if len(cells) < len(headers):
+                cells.extend([""] * (len(headers) - len(cells)))
+            rows.append(dict(zip(headers, cells[:len(headers)])))
+    return rows
+
+
+def _implementation_tasks_from_tables(body: str, default_phase: str) -> list[ImplementationTask]:
+    out: list[ImplementationTask] = []
+    for row in _parse_markdown_table_rows(body):
+        task = row.get("task") or row.get("implementation task") or row.get("action") or ""
+        if not task:
+            continue
+        phase = row.get("phase") or default_phase
+        files = _extract_file_tokens(row.get("files", ""))
+        verify = _split_verify_values(
+            row.get("verify") or row.get("verification") or row.get("tests") or ""
+        )
+        notes = row.get("notes", "")
+        out.append(
+            ImplementationTask(
+                task=task,
+                phase=phase,
+                files=files,
+                verify=verify,
+                notes=notes,
+            )
+        )
+    return out
+
+
 def _extract_implementation_tasks(autoplan_md: str) -> list[ImplementationTask]:
     """Parse /autoplan-style 'Implementation Tasks' rows.
 
@@ -265,6 +325,10 @@ def _extract_implementation_tasks(autoplan_md: str) -> list[ImplementationTask]:
                 start = m.end()
                 end = h3_matches[i + 1].start() if i + 1 < len(h3_matches) else len(body)
                 phase_body = body[start:end]
+                table_rows = _implementation_tasks_from_tables(phase_body, phase_title)
+                if table_rows:
+                    out.extend(table_rows)
+                    continue
                 parsed = _parse_implementation_task_blocks(phase_body, phase_title)
                 if parsed:
                     out.extend(parsed)
@@ -273,6 +337,10 @@ def _extract_implementation_tasks(autoplan_md: str) -> list[ImplementationTask]:
                 for b in bullets:
                     out.append(ImplementationTask(task=b, phase=phase_title))
         else:
+            table_rows = _implementation_tasks_from_tables(body, title.title())
+            if table_rows:
+                out.extend(table_rows)
+                continue
             parsed = _parse_implementation_task_blocks(body, title.title())
             if parsed:
                 out.extend(parsed)
@@ -295,37 +363,65 @@ def _extract_hints(md: str, words: tuple[str, ...]) -> list[str]:
     return hits
 
 
+def _extract_approved_brief_constraints(md: str) -> list[str]:
+    constraints: list[str] = []
+    seen: set[str] = set()
+    for line in md.splitlines():
+        s = line.strip()
+        lower = s.lower()
+        if not s:
+            continue
+        if (
+            "only allowed write root" in lower
+            or "do not modify" in lower
+            or "out of scope" in lower
+        ):
+            if s not in seen:
+                seen.add(s)
+                constraints.append(s)
+    return constraints
+
+
 def parse(
     *,
     design_path: Path | None,
     autoplan_path: Path | None = None,
     approved_brief_path: Path | None = None,
     stack_profile: StackProfile | None = None,
+    repo_root: Path | None = None,
 ) -> GstackPlanIR:
     source_artifacts: list[SourceArtifact] = []
     bodies: list[str] = []
     if design_path is not None:
-        art = _hash_file(design_path)
+        art = _hash_file(design_path, repo_root=repo_root)
         art.kind = "office_hours"
         source_artifacts.append(art)
         bodies.append(design_path.read_text(encoding="utf-8"))
     autoplan_md = ""
     if autoplan_path is not None:
-        art = _hash_file(autoplan_path)
+        art = _hash_file(autoplan_path, repo_root=repo_root)
         art.kind = "autoplan"
         source_artifacts.append(art)
         autoplan_md = autoplan_path.read_text(encoding="utf-8")
         bodies.append(autoplan_md)
+    approved_brief_md = ""
     if approved_brief_path is not None:
-        art = _hash_file(approved_brief_path)
+        art = _hash_file(approved_brief_path, repo_root=repo_root)
         art.kind = "approved_brief"
         source_artifacts.append(art)
-        bodies.append(approved_brief_path.read_text(encoding="utf-8"))
+        approved_brief_md = approved_brief_path.read_text(encoding="utf-8")
+        bodies.append(approved_brief_md)
 
     combined = "\n\n".join(bodies)
     sections = _split_h2(combined)
 
-    problem = _find_section(sections, "problem statement", "what makes this cool")
+    problem = _find_section(
+        sections,
+        "problem statement",
+        "goal",
+        "objective",
+        "what makes this cool",
+    )
     constraints_body = _find_section(sections, "constraints")
     premises_body = _find_section(sections, "premises")
     approach_body = _find_section(sections, "recommended path", "recommended approach", "approaches considered")
@@ -337,6 +433,9 @@ def parse(
 
     non_goals = _extract_bullets(non_goals_body)
     constraints = _extract_bullets(constraints_body) or _extract_bullets(premises_body)
+    for constraint in _extract_approved_brief_constraints(approved_brief_md):
+        if constraint not in constraints:
+            constraints.append(constraint)
     risk_hints = _extract_bullets(risks_body)
 
     implementation_tasks = _extract_implementation_tasks(autoplan_md) if autoplan_md else []

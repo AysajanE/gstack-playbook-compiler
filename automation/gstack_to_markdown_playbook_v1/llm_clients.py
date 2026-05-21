@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -27,7 +29,7 @@ class ModelClientError(RuntimeError):
 class ExternalCommandJsonClient:
     """Run a configured command, prompt on stdin, JSON text on stdout."""
 
-    def __init__(self, command: str) -> None:
+    def __init__(self, command: str, *, cwd: Path | None = None) -> None:
         self.command = command.strip()
         if not self.command:
             raise ModelClientError("row author command is empty")
@@ -37,6 +39,7 @@ class ExternalCommandJsonClient:
         if shutil.which(parts[0]) is None:
             raise ModelClientError(f"row author executable not found on PATH: {parts[0]}")
         self._parts = parts
+        self.cwd = cwd
         self.last_stderr = ""
 
     def complete_json(
@@ -45,8 +48,10 @@ class ExternalCommandJsonClient:
         prompt: str,
         timeout_sec: int,
     ) -> str:
-        try:
-            proc = subprocess.run(
+        env = os.environ.copy()
+
+        def _run(proc_cwd: Path) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
                 self._parts,
                 input=prompt,
                 stdout=subprocess.PIPE,
@@ -54,7 +59,16 @@ class ExternalCommandJsonClient:
                 text=True,
                 timeout=timeout_sec,
                 check=False,
+                cwd=proc_cwd,
+                env=env,
             )
+
+        try:
+            if self.cwd is not None:
+                proc = _run(self.cwd)
+            else:
+                with tempfile.TemporaryDirectory(prefix="keel-row-author-") as tmp:
+                    proc = _run(Path(tmp))
         except subprocess.TimeoutExpired as exc:
             raise ModelClientError(
                 f"row author command timed out after {timeout_sec}s"

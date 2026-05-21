@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import unittest
 
 from automation.gstack_to_markdown_playbook_v1.ir_models import (
@@ -78,6 +79,15 @@ def _good_row() -> CandidateRow:
     )
 
 
+def _second_good_row() -> CandidateRow:
+    row = copy.deepcopy(_good_row())
+    row.step_id = "02"
+    row.prerequisites = "01"
+    row.action = "Verify the mood API endpoint regression coverage remains targeted."
+    row.exit_criteria = "python -m pytest tests/test_mood_api.py passes after the implementation row."
+    return row
+
+
 class QualityGatesTest(unittest.TestCase):
     def test_accepts_specific_rows_using_only_ledger_paths(self) -> None:
         quality = validate_author_quality(
@@ -103,9 +113,27 @@ class QualityGatesTest(unittest.TestCase):
         )
 
         codes = {finding["code"] for finding in quality["errors"]}
-        self.assertIn("AUTHOR_PLACEHOLDER_TEXT", codes)
+        self.assertIn("AUTHOR_ACTION_TOO_VAGUE", codes)
         self.assertIn("AUTHOR_INVENTED_PATH", codes)
         self.assertIn("AUTHOR_UNCOVERED_TASK", codes)
+
+    def test_rejects_source_doc_as_deliverable_even_when_known(self) -> None:
+        row = _good_row()
+        row.deliverable = ["docs/gstack/design.md"]
+        row.allowed_write_roots = ["docs/gstack"]
+        row.requires_red_green = False
+        row.required_verification_commands = []
+        row.required_verification_artifacts = ["docs/gstack/design.md"]
+
+        quality = validate_author_quality(
+            bundle=CandidateRowsBundle(rows=[row]),
+            ir=_ir(),
+            author_context=_context(),
+        )
+
+        codes = {finding["code"] for finding in quality["errors"]}
+        self.assertIn("AUTHOR_UNSAFE_DELIVERABLE_PATH", codes)
+        self.assertIn("AUTHOR_INVENTED_PATH", codes)
 
     def test_turns_quality_warnings_into_compiler_warnings(self) -> None:
         row = _good_row()
@@ -119,6 +147,89 @@ class QualityGatesTest(unittest.TestCase):
 
         warnings = warnings_as_compiler_warnings(quality)
         self.assertTrue(any("AUTHOR_TEST_COMMAND_NOT_TARGETED" in item for item in warnings))
+
+    def test_rejects_more_than_max_authored_rows(self) -> None:
+        context = _context()
+        context["global_rules"] = {"max_rows": 1}
+
+        quality = validate_author_quality(
+            bundle=CandidateRowsBundle(rows=[_good_row(), _second_good_row()]),
+            ir=_ir(),
+            author_context=context,
+        )
+
+        self.assertIn("AUTHOR_TOO_MANY_ROWS", {finding["code"] for finding in quality["errors"]})
+
+    def test_prereq_range_expands_for_forward_prerequisite_checks(self) -> None:
+        row = _good_row()
+        row.step_id = "04"
+        row.prerequisites = "02-04"
+
+        quality = validate_author_quality(
+            bundle=CandidateRowsBundle(rows=[row]),
+            ir=_ir(),
+            author_context=_context(),
+        )
+
+        self.assertIn(
+            "AUTHOR_FORWARD_PREREQUISITE",
+            {finding["code"] for finding in quality["errors"]},
+        )
+
+    def test_action_verb_calibration_accepts_turn_and_scaffold_word(self) -> None:
+        row = _good_row()
+        row.action = "Turn the release-note scaffold into a reviewed playbook artifact."
+        row.exit_criteria = "docs/gstack/design.md exists and the scaffold wording remains scoped."
+
+        quality = validate_author_quality(
+            bundle=CandidateRowsBundle(rows=[row]),
+            ir=_ir(),
+            author_context=_context(),
+        )
+
+        self.assertNotIn(
+            "AUTHOR_ACTION_TOO_VAGUE",
+            {finding["code"] for finding in quality["errors"]},
+        )
+        self.assertNotIn(
+            "AUTHOR_PLACEHOLDER_TEXT",
+            {finding["code"] for finding in quality["errors"]},
+        )
+
+    def test_database_and_infra_rows_emit_risk_warnings(self) -> None:
+        context = _context()
+        context["known_paths"].extend(["migrations/001_add_mood.sql", ".github/workflows/ci.yml"])
+        context["known_write_roots"].extend(["migrations", ".github/workflows"])
+        context["path_ledger"].extend([
+            {
+                "path": "migrations/001_add_mood.sql",
+                "safe_as_repo_surface": False,
+                "safe_as_deliverable": True,
+            },
+            {
+                "path": ".github/workflows/ci.yml",
+                "safe_as_repo_surface": False,
+                "safe_as_deliverable": True,
+            },
+        ])
+        db_row = _good_row()
+        db_row.deliverable = ["migrations/001_add_mood.sql"]
+        db_row.allowed_write_roots = ["migrations"]
+        db_row.required_verification_commands = ["python -m pytest tests/test_mood_api.py"]
+        infra_row = _second_good_row()
+        infra_row.deliverable = [".github/workflows/ci.yml"]
+        infra_row.allowed_write_roots = [".github/workflows"]
+
+        quality = validate_author_quality(
+            bundle=CandidateRowsBundle(rows=[db_row, infra_row]),
+            ir=_ir(),
+            author_context=context,
+        )
+
+        warning_codes = {finding["code"] for finding in quality["warnings"]}
+        self.assertIn("AUTHOR_DB_WITHOUT_MIGRATION_VERIFICATION", warning_codes)
+        self.assertIn("AUTHOR_DB_WITHOUT_MANUAL_GATE", warning_codes)
+        self.assertIn("AUTHOR_INFRA_WITHOUT_MANUAL_GATE", warning_codes)
 
 
 if __name__ == "__main__":

@@ -22,6 +22,7 @@ class FakeClient:
     def __init__(self, responses: list[dict]) -> None:
         self.responses = [json.dumps(item) for item in responses]
         self.prompts: list[str] = []
+        self.last_stderr = "fake stderr note"
 
     def complete_json(self, *, prompt: str, timeout_sec: int) -> str:
         self.prompts.append(prompt)
@@ -123,6 +124,9 @@ class RowAuthorTest(unittest.TestCase):
         self.assertEqual(result.author_input["schema_version"], "row_author_context_v1")
         self.assertEqual(result.trace["source_task_to_rows"], {"task_001": ["01"]})
         self.assertEqual(result.trace["invented_paths"], [])
+        self.assertTrue(result.trace["raw_model_output_sha256"])
+        self.assertTrue(result.trace["model_stderr_sha256"])
+        self.assertEqual(result.trace["model_stderr_excerpt"], "fake stderr note")
         self.assertIn("row_author_context_v1", client.prompts[0])
 
     def test_author_fails_closed_when_no_implementation_tasks_exist(self) -> None:
@@ -158,6 +162,32 @@ class RowAuthorTest(unittest.TestCase):
 
         self.assertEqual(cm.exception.code, "AUTHOR_MODEL_OUTPUT_INVALID")
 
+    def test_author_fails_before_model_on_context_conflict(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ir = GstackPlanIR(
+                compiled_at="2026-05-21T00:00:00+00:00",
+                constraints=["Documentation only. Do not modify application code."],
+                implementation_tasks=[
+                    ImplementationTask(
+                        task="Implement the mood API endpoint",
+                        phase="Backend",
+                        files=["src/api/mood.py"],
+                    )
+                ],
+            )
+            client = FakeClient([_bundle_payload()])
+
+            with self.assertRaises(RowAuthorError) as cm:
+                LLMJsonRowAuthor(name="fake", model_client=client).author(
+                    ir=ir,
+                    repo_root=root,
+                    options=RowAuthorOptions(),
+                )
+
+        self.assertEqual(cm.exception.code, "AUTHOR_CONTEXT_CONFLICT")
+        self.assertEqual(client.prompts, [])
+
     def test_behavioral_tasks_without_paths_fail_or_emit_planning_gap_rows(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -182,6 +212,30 @@ class RowAuthorTest(unittest.TestCase):
         self.assertEqual(result.bundle.rows[0].phase, "planning gap")
         self.assertFalse(result.bundle.rows[0].requires_red_green)
         self.assertIn("docs/gstack/task_001-planning-gap.md", result.author_input["known_paths"])
+
+    def test_docs_task_without_files_fails_or_emits_planning_gap_rows(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ir = GstackPlanIR(
+                compiled_at="2026-05-21T00:00:00+00:00",
+                implementation_tasks=[
+                    ImplementationTask(task="Write the release note", phase="Docs")
+                ],
+            )
+            author = LLMJsonRowAuthor(name="fake", model_client=FakeClient([]))
+
+            with self.assertRaises(RowAuthorError) as cm:
+                author.author(ir=ir, repo_root=root, options=RowAuthorOptions())
+            self.assertEqual(cm.exception.code, "AUTHOR_TASK_MISSING_PATHS")
+
+            result = author.author(
+                ir=ir,
+                repo_root=root,
+                options=RowAuthorOptions(allow_planning_gap_rows=True),
+            )
+
+        self.assertEqual(result.bundle.rows[0].phase, "planning gap")
+        self.assertEqual(result.bundle.rows[0].deliverable, ["docs/gstack/task_001-planning-gap.md"])
 
 
 if __name__ == "__main__":

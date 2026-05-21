@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from .ir_models import GstackPlanIR
 from .provenance import render_header
-from .row_models import CandidateRow, CandidateRowsBundle
+from .row_models import CandidateRow, CandidateRowsBundle, PhaseDetail
 
 
 COLUMN_ORDER = [
@@ -52,13 +52,10 @@ PATH_COLUMNS = {"repo_surfaces", "deliverable", "consult_paths", "required_verif
 
 
 def _escape_cell(value: str) -> str:
-    """Collapse cells to one row.
-
-    plan-orchestrator's current markdown parser splits on raw pipe characters
-    and does not understand escaped pipes. Validation rejects pipes before this
-    point; the replacement below is a final defensive guard.
-    """
-    return value.replace("|", "/").replace("\n", " ").replace("\r", " ").strip()
+    """Collapse cells to one row and assert validation already rejected pipes."""
+    if "|" in value:
+        raise ValueError("Pipe characters are forbidden in markdown table cells.")
+    return value.replace("\n", " ").replace("\r", " ").strip()
 
 
 def _render_path_token(p: str) -> str:
@@ -112,6 +109,29 @@ def _slugify(text: str) -> str:
     return "".join(out).strip("-") or "section"
 
 
+def _default_phase_details(rows: list[CandidateRow]) -> list[PhaseDetail]:
+    seen: set[str] = set()
+    out: list[PhaseDetail] = []
+    for row in rows:
+        if row.phase in seen:
+            continue
+        seen.add(row.phase)
+        out.append(
+            PhaseDetail(
+                phase_slug=_slugify(row.phase),
+                title=row.phase.title(),
+                body=f"Execute rows tagged `{row.phase}` in the order defined by the execution table.",
+            )
+        )
+    return out or [
+        PhaseDetail(
+            phase_slug="execution",
+            title="Execution",
+            body="Execute the ordered rows in section 2.",
+        )
+    ]
+
+
 def emit_playbook_markdown(
     *,
     ir: GstackPlanIR,
@@ -141,34 +161,43 @@ def emit_playbook_markdown(
     parts.append(_render_table(bundle.rows))
     parts.append("")
 
-    if bundle.support_sections.phase_details:
-        parts.append("## 3. Phase Details")
+    parts.append("## 3. Phase Details")
+    parts.append("")
+    phase_details = bundle.support_sections.phase_details or _default_phase_details(bundle.rows)
+    for idx, pd in enumerate(phase_details, start=1):
+        parts.append(f"### 3.{idx} {pd.title}")
         parts.append("")
-        for idx, pd in enumerate(bundle.support_sections.phase_details, start=1):
-            parts.append(f"### 3.{idx} {pd.title}")
-            parts.append("")
-            parts.append(pd.body.strip())
-            parts.append("")
+        parts.append(pd.body.strip())
+        parts.append("")
 
+    parts.append("## 4. Shared Guidance")
+    parts.append("")
     if bundle.support_sections.shared_guidance:
-        parts.append("## 4. Shared Guidance")
-        parts.append("")
         for idx, g in enumerate(bundle.support_sections.shared_guidance, start=1):
             parts.append(f"### 4.{idx} {g.title}")
             parts.append("")
             parts.append(g.body.strip())
             parts.append("")
+    else:
+        parts.append("### 4.1 Scope Rules")
+        parts.append("")
+        parts.append("Respect each row's `allowed_write_roots`, prerequisites, and verification requirements.")
+        parts.append("")
 
-    if bundle.support_sections.risks_and_contingencies.strip():
-        parts.append("## 5. Risks And Contingencies")
-        parts.append("")
-        parts.append(bundle.support_sections.risks_and_contingencies.strip())
-        parts.append("")
+    parts.append("## 5. Risks And Contingencies")
+    parts.append("")
+    parts.append(
+        bundle.support_sections.risks_and_contingencies.strip()
+        or "No additional risk hints were extracted. Stop at manual gates, external blockers, or failed verification."
+    )
+    parts.append("")
 
-    if bundle.support_sections.immediate_next_actions.strip():
-        parts.append("## 6. Immediate Next Actions")
-        parts.append("")
-        parts.append(bundle.support_sections.immediate_next_actions.strip())
-        parts.append("")
+    parts.append("## 6. Immediate Next Actions")
+    parts.append("")
+    parts.append(
+        bundle.support_sections.immediate_next_actions.strip()
+        or "Run PO `list-items` and `doctor --playbook --format json` before supervised execution."
+    )
+    parts.append("")
 
     return "\n".join(parts).rstrip() + "\n"

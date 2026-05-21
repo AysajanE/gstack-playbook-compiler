@@ -195,6 +195,7 @@ def stub_author(ir: GstackPlanIR) -> CandidateRowsBundle:
                 requires_red_green=False,
                 manual_gate="signoff",
                 manual_gate_reason="Cannot proceed without a reviewed task list.",
+                manual_gate_evidence=["reviewed implementation task list"],
                 notes=["compiler-stub: needs /autoplan input."],
             )
         )
@@ -355,6 +356,23 @@ def _trace_for_bundle(
     }
 
 
+def _add_model_trace_hashes(
+    *,
+    trace: dict[str, Any],
+    model_client: JsonModelClient,
+    raw_model_output: str,
+) -> None:
+    client_stderr = getattr(model_client, "last_stderr", "")
+    trace["raw_model_output_sha256"] = hashlib.sha256(
+        raw_model_output.encode("utf-8")
+    ).hexdigest()
+    trace["model_stderr_sha256"] = (
+        hashlib.sha256(client_stderr.encode("utf-8")).hexdigest()
+        if client_stderr else ""
+    )
+    trace["model_stderr_excerpt"] = client_stderr[-1000:] if client_stderr else ""
+
+
 def build_author_trace(
     *,
     row_author: str,
@@ -445,6 +463,21 @@ class LLMJsonRowAuthor:
             repo_root=repo_root,
             max_rows=options.max_rows,
         )
+        fatal_context_findings = [
+            finding for finding in author_context.get("context_findings", [])
+            if finding.get("severity") == "error"
+        ]
+        if fatal_context_findings:
+            message = "; ".join(
+                str(finding.get("message", "context finding"))
+                for finding in fatal_context_findings
+            )
+            raise RowAuthorError(
+                "AUTHOR_CONTEXT_CONFLICT",
+                "Step 2 cannot author rows because source constraints conflict with "
+                f"implementation tasks: {message}",
+                author_input=author_context,
+            )
         if not ir.implementation_tasks:
             raise RowAuthorError(
                 "AUTHOR_NO_IMPLEMENTATION_TASKS",
@@ -452,7 +485,7 @@ class LLMJsonRowAuthor:
                 author_input=author_context,
             )
         missing_path_cards = [
-            card for card in author_context.get("task_cards", []) if card.get("missing_paths_behavioral")
+            card for card in author_context.get("task_cards", []) if card.get("missing_declared_files")
         ]
         if missing_path_cards:
             if options.allow_planning_gap_rows:
@@ -469,7 +502,7 @@ class LLMJsonRowAuthor:
             missing = ", ".join(str(card["task_id"]) for card in missing_path_cards)
             raise RowAuthorError(
                 "AUTHOR_TASK_MISSING_PATHS",
-                f"Step 2 cannot author behavioral rows because these tasks lack concrete file paths: {missing}.",
+                f"Step 2 cannot author executable rows because these tasks lack concrete file paths: {missing}.",
                 author_input=author_context,
             )
 
@@ -504,6 +537,11 @@ class LLMJsonRowAuthor:
             bundle=bundle,
             author_context=author_context,
         )
+        _add_model_trace_hashes(
+            trace=trace,
+            model_client=self.model_client,
+            raw_model_output=raw,
+        )
         return RowAuthorResult(
             bundle=bundle,
             trace=trace,
@@ -512,7 +550,7 @@ class LLMJsonRowAuthor:
         )
 
 
-def get_author(name: str, *, command: str = "") -> RowAuthor:
+def get_author(name: str, *, command: str = "", cwd: Path | None = None) -> RowAuthor:
     if name == "stub":
         return StubRowAuthor()
     if name == "external-json":
@@ -520,13 +558,13 @@ def get_author(name: str, *, command: str = "") -> RowAuthor:
             raise NotImplementedError("--row-author external-json requires --row-author-command")
         return LLMJsonRowAuthor(
             name=name,
-            model_client=ExternalCommandJsonClient(command),
+            model_client=ExternalCommandJsonClient(command, cwd=cwd),
         )
     if name in {"claude", "codex"}:
         resolved = command or DEFAULT_AUTHOR_COMMANDS[name]
         return LLMJsonRowAuthor(
             name=name,
-            model_client=ExternalCommandJsonClient(resolved),
+            model_client=ExternalCommandJsonClient(resolved, cwd=cwd),
         )
     raise ValueError("unknown row_author {!r}; available: {}".format(
         name,

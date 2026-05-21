@@ -188,6 +188,26 @@ Build a small reviewed artifact.
             self.assertEqual(rc, 2)
             self.assertFalse(out.exists())
 
+    def test_design_must_be_under_repo_root(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            outside = Path(tmp) / "outside"
+            root.mkdir()
+            outside.mkdir()
+            design = self._design(outside)
+            out = root / "docs" / "playbooks" / "demo.playbook.md"
+
+            rc = main([
+                "compile",
+                "--repo-root", str(root),
+                "--design", str(design),
+                "--out", str(out),
+                "--dry-run",
+            ])
+
+            self.assertEqual(rc, 2)
+            self.assertFalse(out.exists())
+
     def test_verify_with_po_requires_plan_orchestrator_root_before_emit(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -308,6 +328,95 @@ Build a small reviewed artifact.
             trace = json.loads(out.with_name("demo.author_trace.json").read_text(encoding="utf-8"))
             self.assertTrue(trace["repair_attempted"])
             self.assertIn("repair_trace", trace)
+
+    def test_max_rows_failure_writes_diagnostics(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for rel in ["src/api/mood.py", "tests/test_mood_api.py"]:
+                path = root / rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("# file\n", encoding="utf-8")
+            out = root / "docs" / "playbooks" / "demo.playbook.md"
+            payload = self._valid_model_payload()
+            second = dict(payload["rows"][0])
+            second["step_id"] = "02"
+            second["prerequisites"] = "01"
+            second["action"] = "Verify the mood API endpoint regression remains targeted."
+            payload["rows"].append(second)
+            script = self._fake_author_script(root, payload)
+
+            rc = main([
+                "compile",
+                "--repo-root", str(root),
+                "--design", str(self._design(root)),
+                "--autoplan", str(self._autoplan(root)),
+                "--out", str(out),
+                "--row-author", "external-json",
+                "--row-author-command", f"{sys.executable} {script}",
+                "--max-authored-rows", "1",
+                "--no-row-repair",
+                "--skip-po-verify", "unit test",
+            ])
+
+            self.assertEqual(rc, 3)
+            self.assertFalse(out.exists())
+            validation = json.loads(out.with_name("demo.validation.json").read_text(encoding="utf-8"))
+            self.assertIn("AUTHOR_TOO_MANY_ROWS", {err["code"] for err in validation["errors"]})
+            self.assertTrue(out.with_name("demo.rows.json").exists())
+            self.assertTrue(out.with_name("demo.author_input.json").exists())
+
+    def test_validation_warnings_require_allow_warnings_in_non_dry_run(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for rel in ["src/api/mood.py", "tests/test_mood_api.py"]:
+                path = root / rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("# file\n", encoding="utf-8")
+            out = root / "docs" / "playbooks" / "demo.playbook.md"
+            payload = self._valid_model_payload()
+            payload["rows"][0]["required_verification_commands"] = ["custom-check src/api/mood.py"]
+            script = self._fake_author_script(root, payload)
+
+            rc = main([
+                "compile",
+                "--repo-root", str(root),
+                "--design", str(self._design(root)),
+                "--autoplan", str(self._autoplan(root)),
+                "--out", str(out),
+                "--row-author", "external-json",
+                "--row-author-command", f"{sys.executable} {script}",
+                "--no-row-repair",
+                "--skip-po-verify", "unit test",
+            ])
+
+            self.assertEqual(rc, 3)
+            validation = json.loads(out.with_name("demo.validation.json").read_text(encoding="utf-8"))
+            self.assertIn("UNKNOWN_VERIFICATION_COMMAND", {w["code"] for w in validation["warnings"]})
+            rows = json.loads(out.with_name("demo.rows.json").read_text(encoding="utf-8"))
+            self.assertTrue(
+                any("UNKNOWN_VERIFICATION_COMMAND" in warning for warning in rows["compiler_warnings"])
+            )
+
+    def test_po_verification_failure_does_not_leave_official_playbook(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            bad_po = Path(tmp) / "bad-po"
+            root.mkdir()
+            bad_po.mkdir()
+            out = root / "docs" / "playbooks" / "demo.playbook.md"
+
+            rc = main([
+                "compile",
+                "--repo-root", str(root),
+                "--design", str(self._design(root)),
+                "--out", str(out),
+                "--dry-run",
+                "--plan-orchestrator-root", str(bad_po),
+            ])
+
+            self.assertEqual(rc, 4)
+            self.assertFalse(out.exists())
+            self.assertFalse(out.with_name(out.name + ".tmp").exists())
 
 
 if __name__ == "__main__":

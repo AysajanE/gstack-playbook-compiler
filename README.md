@@ -38,18 +38,21 @@ The high-stakes lane target uses [staged-workflow-runner](https://github.com/Ays
 
 ## Architecture
 
-Four stages, with the current implementation deliberately conservative:
+Four stages, with a deliberately conservative Step 2 boundary:
 
 ```text
 Stage 1: Python parse gstack artifacts             → gstack_plan_ir_v1.json
 Stage 2: Candidate row authoring                   → po_candidate_rows_v1.json
-         current shipped author: stub only
+         stub: scaffold-only dry-run/default
+         external-json: command-backed JSON author
+         claude/codex: command aliases, still external and JSON-only
+         one bounded repair attempt by default
 Stage 3: Python compiler preflight (fail closed)   → compiler_validation_report_v1.json
 Stage 4: Python emit (deterministic markdown)      → <slug>.playbook.md
 Post-check: PO list-items + doctor --playbook      → po_contract_verification
 ```
 
-Key design rule: **future LLM authors may author candidate rows only**. Python owns:
+Key design rule: **model-backed authors may author candidate rows only**. Python owns:
 
 - final Markdown table formatting (avoids parser drift)
 - validation verdicts (fails closed on schema, paths, narrow-roots, prereqs)
@@ -57,9 +60,9 @@ Key design rule: **future LLM authors may author candidate rows only**. Python o
 - PO contract verification when `--plan-orchestrator-root` is known
 - any human-gate work (the compiler never touches `mark-manual-gate`)
 
-Current status: `stub` is scaffold-only. Non-dry-run stub output fails unless `--allow-stub-output` is explicit, and non-dry-run warnings fail unless `--allow-warnings REASON` is provided. `claude` and `codex` row authors are not implemented yet.
+Current status: `stub` remains scaffold-only. Non-dry-run stub output fails unless `--allow-stub-output` is explicit, and non-dry-run warnings fail unless `--allow-warnings REASON` is provided. Model-backed authors run as JSON-only planning calls from an isolated temporary cwd by default; they must not implement code or mutate the product repo.
 
-Automatic repair is also not implemented yet. Validation reports include `repair_attempts: 0`; the compiler fails closed and writes diagnostic sidecars instead of running the bundled `row_repair.md` prompt.
+One bounded model-backed repair attempt is enabled by default and can be disabled with `--no-row-repair`. Python validates the repaired candidate exactly like the initial candidate.
 
 ## Install
 
@@ -98,11 +101,12 @@ python automation/gstack_to_markdown_playbook_v1/cli.py compile \
   --autoplan docs/gstack/<slug>-autoplan.md \
   --approved-brief docs/briefs/<slug>.approved-brief.md \
   --out docs/playbooks/<slug>.playbook.md \
-  --row-author claude \
+  --row-author external-json \
+  --row-author-command "claude -p" \
   --plan-orchestrator-root $KEEL_ROOT/tools/plan-orchestrator
 ```
 
-Today this exits `2` because real LLM row authors are not implemented. Use `--dry-run` for scaffold output.
+The model-backed row author must return raw `po_candidate_rows_v1` JSON on stdout. The compiler sends the prompt on stdin, validates the JSON, optionally performs one repair attempt, emits Markdown itself, and runs PO contract verification when configured.
 
 Dry run (uses deterministic stub row author; no LLM needed):
 
@@ -132,6 +136,15 @@ The compiler writes three sibling artifacts:
 docs/playbooks/<slug>.playbook.md
 docs/playbooks/<slug>.playbook.meta.json
 docs/playbooks/<slug>.validation.json
+```
+
+Model-backed compiles also write:
+
+```text
+docs/playbooks/<slug>.ir.json
+docs/playbooks/<slug>.rows.json
+docs/playbooks/<slug>.author_input.json
+docs/playbooks/<slug>.author_trace.json
 ```
 
 The meta sidecar records compiler version, source hashes, emitted playbook hash, warnings, and PO verification status. The compiler never executes PO runs or manual gates.
@@ -167,7 +180,9 @@ automation/gstack_to_markdown_playbook_v1/
   stack_detect.py     # repo stack detection (Python / Node / etc.)
   ir_models.py        # dataclasses for gstack_plan_ir_v1
   row_models.py       # dataclasses for po_candidate_rows_v1
-  row_author.py       # Stage 2: stub author now; LLM authors later
+  row_author.py       # Stage 2: stub and model-backed JSON authors
+  author_context.py   # deterministic row_author_context_v1 builder
+  quality_gates.py    # semantic checks beyond JSON schema
   validators.py       # Stage 3: deterministic validation
   emit_markdown.py    # Stage 4: deterministic markdown emitter
   provenance.py       # HTML-comment provenance header
@@ -175,9 +190,12 @@ automation/gstack_to_markdown_playbook_v1/
     gstack_plan_ir_v1.schema.json
     po_candidate_rows_v1.schema.json
     compiler_validation_report_v1.schema.json
+    row_author_context_v1.schema.json
+    row_author_trace_v1.schema.json
+    row_repair_trace_v1.schema.json
   prompts/
-    row_author.md
-    row_repair.md
+    row_author_v2.md
+    row_repair_v2.md
   tests/
     test_smoke.py
     test_cli_guards.py

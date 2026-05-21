@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "row_author_context_v1",
+  "title": "row_author_context_v1",
+  "description": "Deterministic Python-built input context for Step-2 row authoring.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "global_rules",
+    "path_ledger",
+    "known_paths",
+    "known_write_roots",
+    "task_cards"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": { "const": "row_author_context_v1" },
+    "repo_root": { "type": "string" },
+    "source_artifact_paths": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "global_rules": { "type": "object" },
+    "path_ledger": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "path",
+          "status",
+          "kind",
+          "mentioned_by",
+          "safe_as_deliverable",
+          "safe_as_repo_surface"
+        ],
+        "additionalProperties": true,
+        "properties": {
+          "path": { "type": "string" },
+          "status": { "type": "string" },
+          "kind": { "type": "string" },
+          "mentioned_by": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "safe_as_deliverable": { "type": "boolean" },
+          "safe_as_repo_surface": { "type": "boolean" }
+        }
+      }
+    },
+    "known_paths": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "known_write_roots": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "task_cards": {
+      "type": "array",
+      "items": { "type": "object" }
+    }
+  }
+}

@@ -30,6 +30,10 @@ class ValidatePathsTest(unittest.TestCase):
         report = validate(CandidateRowsBundle(rows=[row]))
         return {err["code"] for err in report["errors"]}
 
+    def _warning_codes(self, row: CandidateRow) -> set[str]:
+        report = validate(CandidateRowsBundle(rows=[row]))
+        return {warning["code"] for warning in report["warnings"]}
+
     def test_dot_prefixed_forbidden_roots_are_errors(self) -> None:
         codes = self._codes(_row(allowed_write_roots=[".local"]))
         self.assertIn("FORBIDDEN_WRITE_ROOT", codes)
@@ -40,6 +44,28 @@ class ValidatePathsTest(unittest.TestCase):
             allowed_write_roots=["docs/releases"],
         ))
         self.assertIn("FORBIDDEN_PATH", codes)
+
+    def test_parent_escape_paths_are_errors(self) -> None:
+        codes = self._codes(_row(deliverable=["../secrets.txt"]))
+        self.assertIn("FORBIDDEN_PATH", codes)
+
+    def test_parent_escape_write_roots_are_errors(self) -> None:
+        codes = self._codes(_row(
+            deliverable=["docs/releases/release.md"],
+            allowed_write_roots=["../docs"],
+        ))
+        self.assertIn("FORBIDDEN_WRITE_ROOT", codes)
+
+    def test_bare_test_root_is_rejected(self) -> None:
+        codes = self._codes(_row(
+            phase="backend",
+            deliverable=["test/test_api.py"],
+            allowed_write_roots=["test"],
+            requires_red_green=True,
+            required_verification_commands=["python -m pytest test/test_api.py"],
+            required_verification_artifacts=[],
+        ))
+        self.assertIn("SUSPICIOUS_BROAD_WRITE_ROOT", codes)
 
     def test_pipe_characters_are_errors(self) -> None:
         codes = self._codes(_row(action="Write alpha | beta note"))
@@ -60,6 +86,68 @@ class ValidatePathsTest(unittest.TestCase):
             required_verification_artifacts=[],
         ))
         self.assertIn("BARE_DOCS_ROOT_FOR_NON_DOCS_ROW", codes)
+
+    def test_destructive_verification_commands_are_errors(self) -> None:
+        codes = self._codes(_row(
+            phase="backend",
+            deliverable=["src/api/mood.py"],
+            allowed_write_roots=["src/api"],
+            requires_red_green=True,
+            required_verification_commands=["rm -rf ."],
+            required_verification_artifacts=[],
+        ))
+        self.assertIn("UNSAFE_VERIFICATION_COMMAND", codes)
+
+    def test_shell_chaining_in_verification_commands_is_error(self) -> None:
+        codes = self._codes(_row(
+            phase="backend",
+            deliverable=["src/api/mood.py"],
+            allowed_write_roots=["src/api"],
+            requires_red_green=True,
+            required_verification_commands=["python -m pytest tests/test_api.py && rm -rf ."],
+            required_verification_artifacts=[],
+        ))
+        self.assertIn("UNSAFE_VERIFICATION_COMMAND", codes)
+
+    def test_unknown_verification_command_is_warning(self) -> None:
+        warnings = self._warning_codes(_row(
+            phase="backend",
+            deliverable=["src/api/mood.py"],
+            allowed_write_roots=["src/api"],
+            requires_red_green=True,
+            required_verification_commands=["custom-check src/api/mood.py"],
+            required_verification_artifacts=[],
+        ))
+        self.assertIn("UNKNOWN_VERIFICATION_COMMAND", warnings)
+
+    def test_manual_gate_requires_reason_and_evidence(self) -> None:
+        codes = self._codes(_row(manual_gate="security_review"))
+        self.assertIn("MANUAL_GATE_WITHOUT_REASON", codes)
+        self.assertIn("MANUAL_GATE_WITHOUT_EVIDENCE", codes)
+
+    def test_external_check_requires_dependencies(self) -> None:
+        codes = self._codes(_row(external_check="human_supplied_evidence_required"))
+        self.assertIn("EXTERNAL_CHECK_WITHOUT_DEPENDENCIES", codes)
+
+    def test_external_dependencies_without_check_are_warnings(self) -> None:
+        warnings = self._warning_codes(_row(external_dependencies=["Stripe dashboard"]))
+        self.assertIn("EXTERNAL_DEPENDENCIES_WITHOUT_CHECK", warnings)
+
+    def test_prereq_range_requires_every_intermediate_step(self) -> None:
+        rows = [
+            _row(step_id="01"),
+            _row(step_id="02", prerequisites="01"),
+            _row(step_id="04", prerequisites="02-04"),
+        ]
+
+        report = validate(CandidateRowsBundle(rows=rows))
+
+        codes = {err["code"] for err in report["errors"]}
+        self.assertIn("PREREQ_LIST_UNDEFINED", codes)
+
+    def test_prereq_range_must_be_increasing(self) -> None:
+        codes = self._codes(_row(step_id="02", prerequisites="03-01"))
+        self.assertIn("PREREQ_RANGE_ORDER", codes)
 
     def test_validation_report_matches_bundled_schema(self) -> None:
         report = validate(CandidateRowsBundle(rows=[_row()]))

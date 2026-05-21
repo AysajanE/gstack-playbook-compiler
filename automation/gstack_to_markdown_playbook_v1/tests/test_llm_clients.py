@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -36,6 +37,38 @@ class LlmClientsTest(unittest.TestCase):
             raw = client.complete_json(prompt="hello MARKER", timeout_sec=10)
 
         self.assertEqual(parse_json_object_strict(raw), {"prompt_has_marker": True})
+
+    def test_external_command_runs_outside_product_repo_by_default(self) -> None:
+        with TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            script = Path(tmp) / "cwd_json.py"
+            script.write_text(
+                "import json, os\n"
+                f"print(json.dumps({{'cwd_is_repo': os.path.realpath(os.getcwd()) == os.path.realpath({json.dumps(str(repo))})}}))\n",
+                encoding="utf-8",
+            )
+            client = ExternalCommandJsonClient(f"{sys.executable} {script}")
+
+            raw = client.complete_json(prompt="{}", timeout_sec=10)
+
+        self.assertEqual(parse_json_object_strict(raw), {"cwd_is_repo": False})
+
+    def test_external_command_can_use_explicit_cwd_for_debugging(self) -> None:
+        with TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            script = Path(tmp) / "cwd_json.py"
+            script.write_text(
+                "import json, os\n"
+                f"print(json.dumps({{'cwd_is_repo': os.path.realpath(os.getcwd()) == os.path.realpath({json.dumps(str(repo))})}}))\n",
+                encoding="utf-8",
+            )
+            client = ExternalCommandJsonClient(f"{sys.executable} {script}", cwd=repo)
+
+            raw = client.complete_json(prompt="{}", timeout_sec=10)
+
+        self.assertEqual(parse_json_object_strict(raw), {"cwd_is_repo": True})
 
     def test_render_prompt_replaces_all_placeholders(self) -> None:
         prompt = render_prompt("row_author_v2.md", {"IR_JSON": "IR", "AUTHOR_CONTEXT_JSON": "CTX"})

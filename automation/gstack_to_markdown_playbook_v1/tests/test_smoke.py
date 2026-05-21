@@ -52,9 +52,16 @@ class CompilerSmokeTest(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertTrue(out.is_file())
             content = out.read_text(encoding="utf-8")
-            # Must contain the required H2 anchor headers.
-            self.assertIn("## 1. Plan Context", content)
-            self.assertIn("## 2. Ordered Execution Plan", content)
+            # Must contain all six required H2 anchor headers.
+            for heading in [
+                "## 1. Plan Context",
+                "## 2. Ordered Execution Plan",
+                "## 3. Phase Details",
+                "## 4. Shared Guidance",
+                "## 5. Risks And Contingencies",
+                "## 6. Immediate Next Actions",
+            ]:
+                self.assertIn(heading, content)
             # The table must include all 11 mandatory columns by header name.
             for col in (
                 "step_id", "phase", "action", "why_now", "owner_type",

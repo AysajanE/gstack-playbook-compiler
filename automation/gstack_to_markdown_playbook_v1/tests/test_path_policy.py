@@ -27,6 +27,7 @@ class PathPolicyTest(unittest.TestCase):
         self.assertEqual(classify_path("tests/test_mood.py"), "test")
         self.assertEqual(classify_path("docs/gstack/design.md"), "source_doc")
         self.assertEqual(classify_path("migrations/001_add_mood.sql"), "db")
+        self.assertEqual(classify_path(".github/workflows/ci.yml"), "infra")
 
         roots = clamp_write_roots(
             [

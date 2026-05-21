@@ -85,6 +85,43 @@ class AuthorContextTest(unittest.TestCase):
 
         self.assertEqual(context["context_findings"][0]["code"], "CONSTRAINT_TASK_CONFLICT")
 
+    def test_adds_existing_parent_directory_as_repo_surface_for_new_file(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src" / "api").mkdir(parents=True)
+            ir = GstackPlanIR(
+                compiled_at="2026-05-21T00:00:00+00:00",
+                implementation_tasks=[
+                    ImplementationTask(
+                        task="Add the new mood API endpoint",
+                        phase="Backend",
+                        files=["src/api/new_mood.py"],
+                    )
+                ],
+            )
+
+            context = build_author_context(ir=ir, repo_root=root)
+
+        card = context["task_cards"][0]
+        self.assertIn("src/api", card["existing_repo_surfaces"])
+        parent_entry = next(entry for entry in context["path_ledger"] if entry["path"] == "src/api")
+        self.assertTrue(parent_entry["safe_as_repo_surface"])
+        self.assertFalse(parent_entry["safe_as_deliverable"])
+
+    def test_pathless_task_is_marked_missing_declared_files(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ir = GstackPlanIR(
+                compiled_at="2026-05-21T00:00:00+00:00",
+                implementation_tasks=[
+                    ImplementationTask(task="Write the release note", phase="Docs")
+                ],
+            )
+
+            context = build_author_context(ir=ir, repo_root=root)
+
+        self.assertTrue(context["task_cards"][0]["missing_declared_files"])
+
 
 if __name__ == "__main__":
     unittest.main()

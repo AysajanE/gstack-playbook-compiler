@@ -29,20 +29,23 @@ from typing import Any
 from jsonschema import Draft202012Validator
 
 from . import VALIDATION_REPORT_SCHEMA_ID
+from .path_policy import (
+    BROAD_WRITE_ROOTS,
+    is_absolute_path as policy_is_absolute_path,
+    is_forbidden_path as policy_is_forbidden_path,
+    normalize_repo_path,
+    path_inside_any_root as policy_path_inside_any_root,
+)
 from .row_models import (
     VALID_EXTERNAL_CHECKS,
     VALID_MANUAL_GATES,
     CandidateRow,
     CandidateRowsBundle,
 )
+from .verification_command_policy import validate_verification_command
 
 SCHEMA_DIR = Path(__file__).resolve().parent / "schemas"
-FORBIDDEN_ROOT_PREFIXES = (
-    ".local", ".git", ".codex", ".claude", ".mcp.json",
-    "secrets", ".env", "ops/config",
-)
 _PREREQ_RANGE = re.compile(r"^[0-9]{2}-[0-9]{2}$")
-_PREREQ_LIST = re.compile(r"^[0-9]{2}(,\s*[0-9]{2})*$")
 _STEP_ID = re.compile(r"^[0-9]{2}$")
 _BEHAVIORAL_SUFFIXES = {
     ".py", ".pyi", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".java", ".kt",
@@ -87,6 +90,33 @@ def validate_rows_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return _schema_findings(payload, "po_candidate_rows_v1.schema.json", label="po_candidate_rows_v1")
 
 
+def validate_author_context_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Validate row_author_context_v1 JSON sidecars."""
+    return _schema_findings(
+        payload,
+        "row_author_context_v1.schema.json",
+        label="row_author_context_v1",
+    )
+
+
+def validate_author_trace_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Validate row_author_trace_v1 JSON sidecars."""
+    return _schema_findings(
+        payload,
+        "row_author_trace_v1.schema.json",
+        label="row_author_trace_v1",
+    )
+
+
+def validate_repair_trace_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Validate row_repair_trace_v1 JSON trace fragments."""
+    return _schema_findings(
+        payload,
+        "row_repair_trace_v1.schema.json",
+        label="row_repair_trace_v1",
+    )
+
+
 def validate_report_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
     """Validate compiler_validation_report_v1 JSON against the bundled schema."""
     return _schema_findings(
@@ -97,49 +127,23 @@ def validate_report_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _normalize_repo_token(value: str) -> str:
-    p = value.strip().strip("`").strip()
-    while p.startswith("./"):
-        p = p[2:]
-    return p.rstrip("/") if p not in {".", "/"} else p
+    return normalize_repo_path(value)
 
 
 def _is_absolute_path(p: str) -> bool:
-    p = p.strip().strip("`")
-    return p.startswith("/") or p.startswith("~") or re.match(r"^[A-Za-z]:[\\/]", p) is not None
+    return policy_is_absolute_path(p)
 
 
 def _is_forbidden_path(path: str) -> bool:
-    if _is_absolute_path(path):
-        return True
-    r = _normalize_repo_token(path)
-    if not r:
-        return True
-    for prefix in FORBIDDEN_ROOT_PREFIXES:
-        if prefix == ".env":
-            if r == ".env" or r.startswith(".env.") or r.startswith(".env/"):
-                return True
-            continue
-        if r == prefix or r.startswith(prefix + "/"):
-            return True
-    if "/.env" in r or "/.git/" in r or "/.local/" in r:
-        return True
-    return False
+    return policy_is_forbidden_path(path)
 
 
 def _is_suspicious_broad_root(root: str) -> bool:
-    r = _normalize_repo_token(root)
-    return r in {".", "src", "tests"}
+    return _normalize_repo_token(root) in BROAD_WRITE_ROOTS
 
 
 def _path_inside_any_root(path: str, roots: list[str]) -> bool:
-    p = _normalize_repo_token(path)
-    for root in roots:
-        r = _normalize_repo_token(root)
-        if not r:
-            continue
-        if p == r or p.startswith(r + "/"):
-            return True
-    return False
+    return policy_path_inside_any_root(path, roots)
 
 
 def _has_pipe(value: Any) -> bool:
@@ -174,6 +178,27 @@ def _looks_behavioral_path(path: str) -> bool:
 
 def _repo_path_exists(repo_root: Path, rel_path: str) -> bool:
     return (repo_root / _normalize_repo_token(rel_path)).exists()
+
+
+def _expand_prereq_tokens(raw: str) -> list[str]:
+    p = raw.strip()
+    if not p or p.lower() == "none":
+        return []
+
+    out: list[str] = []
+    for token in [part.strip() for part in p.split(",") if part.strip()]:
+        if _PREREQ_RANGE.match(token):
+            start, end = token.split("-")
+            if int(start) > int(end):
+                raise ValueError("range_order")
+            width = max(len(start), len(end))
+            for value in range(int(start), int(end) + 1):
+                out.append(str(value).zfill(width))
+        elif _STEP_ID.match(token):
+            out.append(token)
+        else:
+            raise ValueError("format")
+    return out
 
 
 def _validate_row(row: CandidateRow, defined_ids: set[str], *, repo_root: Path | None) -> list[dict[str, Any]]:
@@ -278,6 +303,15 @@ def _validate_row(row: CandidateRow, defined_ids: set[str], *, repo_root: Path |
                 "requires_red_green=true requires at least one required_verification_commands entry.",
                 step_id=step_id, column="required_verification_commands",
             ))
+        for command in row.required_verification_commands:
+            for finding in validate_verification_command(command):
+                findings.append(_finding(
+                    finding.code,
+                    "error" if finding.code != "UNKNOWN_VERIFICATION_COMMAND" else "warning",
+                    finding.message,
+                    step_id=step_id,
+                    column="required_verification_commands",
+                ))
     else:
         if any(_looks_behavioral_path(path) for path in row.deliverable):
             findings.append(_finding(
@@ -299,26 +333,57 @@ def _validate_row(row: CandidateRow, defined_ids: set[str], *, repo_root: Path |
             f"manual_gate {row.manual_gate!r} is not in {sorted(VALID_MANUAL_GATES)}.",
             step_id=step_id, column="manual_gate",
         ))
+    if row.manual_gate != "none":
+        if not row.manual_gate_reason.strip():
+            findings.append(_finding(
+                "MANUAL_GATE_WITHOUT_REASON", "error",
+                "manual_gate requires manual_gate_reason.",
+                step_id=step_id, column="manual_gate_reason",
+            ))
+        if not row.manual_gate_evidence:
+            findings.append(_finding(
+                "MANUAL_GATE_WITHOUT_EVIDENCE", "error",
+                "manual_gate requires manual_gate_evidence.",
+                step_id=step_id, column="manual_gate_evidence",
+            ))
     if row.external_check not in VALID_EXTERNAL_CHECKS:
         findings.append(_finding(
             "INVALID_EXTERNAL_CHECK", "error",
             f"external_check {row.external_check!r} is not in {sorted(VALID_EXTERNAL_CHECKS)}.",
             step_id=step_id, column="external_check",
         ))
+    if row.external_check != "none" and not row.external_dependencies:
+        findings.append(_finding(
+            "EXTERNAL_CHECK_WITHOUT_DEPENDENCIES", "error",
+            "external_check requires external_dependencies.",
+            step_id=step_id, column="external_dependencies",
+        ))
+    if row.external_check == "none" and row.external_dependencies:
+        findings.append(_finding(
+            "EXTERNAL_DEPENDENCIES_WITHOUT_CHECK", "warning",
+            "external_dependencies are ignored when external_check is none.",
+            step_id=step_id, column="external_dependencies",
+        ))
 
     # Prereq integrity
     p = row.prerequisites.strip()
     if p and p.lower() != "none":
-        if _PREREQ_RANGE.match(p):
-            start, end = p.split("-")
-            if start not in defined_ids or end not in defined_ids:
+        try:
+            ids = _expand_prereq_tokens(p)
+        except ValueError as exc:
+            if str(exc) == "range_order":
                 findings.append(_finding(
-                    "PREREQ_RANGE_UNDEFINED", "error",
-                    f"prerequisites {p!r} references step_ids not in this plan.",
+                    "PREREQ_RANGE_ORDER", "error",
+                    f"prerequisites range {p!r} must be increasing.",
                     step_id=step_id, column="prerequisites",
                 ))
-        elif _PREREQ_LIST.match(p):
-            ids = [x.strip() for x in p.split(",")]
+            else:
+                findings.append(_finding(
+                    "PREREQ_FORMAT", "error",
+                    f"prerequisites {p!r} must be 'none', a comma-separated list of step_ids, or a NN-NN range.",
+                    step_id=step_id, column="prerequisites",
+                ))
+        else:
             for i in ids:
                 if i not in defined_ids:
                     findings.append(_finding(
@@ -326,12 +391,6 @@ def _validate_row(row: CandidateRow, defined_ids: set[str], *, repo_root: Path |
                         f"prerequisites references undefined step_id {i!r}.",
                         step_id=step_id, column="prerequisites",
                     ))
-        else:
-            findings.append(_finding(
-                "PREREQ_FORMAT", "error",
-                f"prerequisites {p!r} must be 'none', a comma-separated list of step_ids, or a NN-NN range.",
-                step_id=step_id, column="prerequisites",
-            ))
 
     # Deliverable should fall inside at least one allowed_write_root (loose check).
     for d in row.deliverable:

@@ -139,14 +139,14 @@ def classify_path(path: str) -> PathKind:
         return "db"
     if name in {"Dockerfile", "docker-compose.yml", "docker-compose.yaml"}:
         return "infra"
+    if p.startswith((".github/", "infra/", "ops/")):
+        return "infra"
     if suffix in CODE_SUFFIXES:
         return "code"
     if suffix in DOC_SUFFIXES or p.startswith("docs/"):
         return "doc"
     if suffix in CONFIG_SUFFIXES:
         return "config"
-    if p.startswith((".github/", "infra/", "ops/")):
-        return "infra"
     return "unknown"
 
 

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "row_repair_trace_v1",
+  "title": "row_repair_trace_v1",
+  "description": "Trace fragment for the one bounded Step-2 row repair attempt.",
+  "type": "object",
+  "required": ["schema_version", "prompt_sha256"],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": { "const": "row_repair_trace_v1" },
+    "prompt_sha256": { "type": "string" },
+    "raw_model_output_sha256": { "type": "string" },
+    "model_stderr_sha256": { "type": "string" },
+    "model_stderr_excerpt": { "type": "string" }
+  }
+}

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gstack-to-markdown-playbook-v1"
-version = "0.1.0"
+version = "0.2.0"
 description = "Compile approved gstack design artifacts into plan-orchestrator markdown_playbook_v1."
 readme = "README.md"
 requires-python = ">=3.10"

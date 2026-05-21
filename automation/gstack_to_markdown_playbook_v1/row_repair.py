@@ -47,11 +47,18 @@ def repair_rows(
         details = "; ".join(err["message"] for err in schema_errors[:3])
         raise ValueError(f"po_candidate_rows_v1 schema validation failed: {details}")
     bundle = CandidateRowsBundle.from_dict(payload)
+    client_stderr = getattr(model_client, "last_stderr", "")
     return RowRepairResult(
         bundle=bundle,
         trace={
             "schema_version": "row_repair_trace_v1",
             "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+            "raw_model_output_sha256": hashlib.sha256(raw.encode("utf-8")).hexdigest(),
+            "model_stderr_sha256": (
+                hashlib.sha256(client_stderr.encode("utf-8")).hexdigest()
+                if client_stderr else ""
+            ),
+            "model_stderr_excerpt": client_stderr[-1000:] if client_stderr else "",
         },
         raw_model_output=raw,
     )
